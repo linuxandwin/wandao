@@ -1,0 +1,6 @@
+interface:
+  display_name: "Run Wandao"
+  short_description: "Launch Wandao and recommend export settings from a URL."
+  default_prompt: "Use $run-wandao to analyze my knowledge base URL, recommend safe export settings, and launch Wandao."
+policy:
+  allow_implicit_invocation: true

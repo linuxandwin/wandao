@@ -51,6 +51,50 @@ python wandao.py
 
 启动后选择要导出的知识库类型，然后点击“打开导出界面”。
 
+## AI Skill 一键运行
+
+仓库内置了一个 Codex Skill：`skills/run-wandao`。
+
+它不是单纯的提示词，而是会让 AI 直接调用 Skill 内置脚本：
+
+```text
+skills/run-wandao/scripts/launch_wandao.py
+```
+
+这个脚本会自动定位万能导项目目录；如果本机没有项目目录，会尝试从 GitHub 克隆，然后调用 `wandao.py` 启动程序。
+
+它适合给不熟悉参数的用户使用：用户把 Skill 导入 AI 工具后，可以直接让 AI 分析知识库链接，推荐导出参数，并启动万能导。
+
+在 Windows PowerShell 中导入：
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
+Copy-Item -Recurse -Force ".\skills\run-wandao" "$env:USERPROFILE\.codex\skills\run-wandao"
+```
+
+在 macOS/Linux 中导入：
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R ./skills/run-wandao ~/.codex/skills/
+```
+
+导入后，在新的 AI 对话中可以这样说：
+
+```text
+Use $run-wandao 帮我分析这个知识库链接，推荐导出参数并启动万能导：<你的链接>
+```
+
+如果用户没有克隆本项目，Skill 里的启动脚本会尝试自动定位本机已有的万能导目录；找不到时会从 GitHub 克隆到 `~/.wandao/wandao`。
+
+也可以手动运行 Skill 的启动脚本：
+
+```powershell
+python skills/run-wandao/scripts/launch_wandao.py
+python skills/run-wandao/scripts/launch_wandao.py --url "<你的链接>" --dry-run
+python skills/run-wandao/scripts/launch_wandao.py --url "<你的链接>" --export
+```
+
 也可以直接打开某个平台：
 
 ```powershell
