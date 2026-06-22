@@ -15,6 +15,12 @@ Author: `tllovesxs`
 
 在新电脑上运行时，万能导会自动查找常见安装位置中的 Chrome、Edge 或 Chromium；也会读取 PATH 中的浏览器命令。如果浏览器安装在非常规位置，可以设置环境变量 `WANDAO_BROWSER` 指向浏览器可执行文件。
 
+每个导出界面都有“浏览器程序路径”一栏：
+
+- 点击“查找”会自动扫描浏览器。
+- 点击“选择”可以手动指定浏览器程序。
+- 如果没有找到浏览器，请先安装 Chrome、Edge 或 Chromium。
+
 ## 适用场景
 
 - 你有权限访问某个知识库，希望备份到本地 Markdown。
@@ -136,6 +142,12 @@ python wandao.py --provider feishu -- --wiki-url "https://<tenant>.feishu.cn/wik
 
 ```powershell
 python wandao.py --provider aliyun-thoughts -- --workspace-url "https://thoughts.aliyun.com/workspaces/<id>/overview" --output "./exports/aliyun-thoughts" --incremental
+```
+
+浏览器安装在非常规位置时：
+
+```powershell
+python wandao.py --provider zsxq -- --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe" --entry-url "https://wx.zsxq.com/columns/..."
 ```
 
 ## License

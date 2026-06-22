@@ -86,10 +86,13 @@ def auth_path_from_args(args: argparse.Namespace) -> Path:
     return Path(args.auth_file).resolve() if args.auth_file else default_auth_path().resolve()
 
 
-def start_chrome(port: int, profile_dir: Path, url: str) -> subprocess.Popen[Any]:
-    chrome = find_chrome()
+def start_chrome(port: int, profile_dir: Path, url: str, browser_path: str | None = None) -> subprocess.Popen[Any]:
+    chrome = find_chrome(browser_path)
     if not chrome:
-        raise ExportError("Chrome/Edge executable was not found.")
+        raise ExportError(
+            "Chrome/Edge executable was not found. Install Chrome/Edge, add it to PATH, "
+            "or set WANDAO_BROWSER to the browser executable path."
+        )
     profile_dir.mkdir(parents=True, exist_ok=True)
     return subprocess.Popen(
         [
@@ -143,7 +146,7 @@ def connect_browser(args: argparse.Namespace, entry_url: str) -> tuple[CDPClient
     chrome_proc: subprocess.Popen[Any] | None = None
     if not chrome_debug_available(args.port):
         profile = Path(args.profile_dir).resolve() if args.profile_dir else default_profile_path()
-        chrome_proc = start_chrome(args.port, profile, entry_url)
+        chrome_proc = start_chrome(args.port, profile, entry_url, getattr(args, "browser_path", None))
         wait_for_debug_port(args.port, timeout=30)
 
     page = page_for_zsxq(args.port)
@@ -1554,6 +1557,7 @@ def run_gui() -> int:
     output_var = tk.StringVar(value=str((PROJECT_DIR / "exports" / "zsxq").resolve()))
     auth_var = tk.StringVar(value=str(default_auth_path()))
     profile_var = tk.StringVar(value=str(default_profile_path()))
+    browser_path_var = tk.StringVar(value="")
     port_var = tk.StringVar(value=str(DEFAULT_PORT))
     pattern_var = tk.StringVar(value="")
     limit_var = tk.StringVar(value="0")
@@ -1606,6 +1610,25 @@ def run_gui() -> int:
         if selected:
             profile_var.set(selected)
 
+    def browse_browser() -> None:
+        selected = filedialog.askopenfilename(
+            title="选择 Chrome / Edge / Chromium 浏览器程序",
+            filetypes=[("Browser executable", "*.exe"), ("All files", "*.*")],
+        )
+        if selected:
+            browser_path_var.set(selected)
+
+    def detect_browser() -> None:
+        found = find_chrome(browser_path_var.get().strip() or None)
+        if found:
+            browser_path_var.set(found)
+            messagebox.showinfo("已找到浏览器", f"浏览器程序：\n{found}")
+            return
+        messagebox.showwarning(
+            "未找到浏览器",
+            "没有自动找到 Chrome、Edge 或 Chromium。\n\n请点击“选择”手动指定浏览器程序，或者先下载安装 Chrome/Edge。",
+        )
+
     def open_output() -> None:
         path = Path(output_var.get())
         path.mkdir(parents=True, exist_ok=True)
@@ -1630,6 +1653,7 @@ def run_gui() -> int:
             output=output_var.get().strip(),
             port=int(port_var.get().strip() or DEFAULT_PORT),
             profile_dir=profile_var.get().strip() or None,
+            browser_path=browser_path_var.get().strip() or None,
             auth_file=auth_var.get().strip() or str(default_auth_path()),
             skip_auth_load=False,
             wait_login=False,
@@ -1862,22 +1886,29 @@ def run_gui() -> int:
         if browse:
             tk.Button(form, text="选择", command=browse).grid(row=row_index, column=2, pady=5)
 
+    def browser_row(row_index: int) -> None:
+        tk.Label(form, text="浏览器程序路径", anchor="w").grid(row=row_index, column=0, sticky="w", pady=5)
+        tk.Entry(form, textvariable=browser_path_var).grid(row=row_index, column=1, sticky="ew", padx=8, pady=5)
+        tk.Button(form, text="选择", command=browse_browser).grid(row=row_index, column=2, pady=5)
+        tk.Button(form, text="查找", command=detect_browser).grid(row=row_index, column=3, padx=(6, 0), pady=5)
+
     row("知识星球入口 URL", entry_var, 0)
     row("输出目录", output_var, 1, browse_output)
     row("凭证文件", auth_var, 2, browse_auth)
     row("浏览器配置目录", profile_var, 3, browse_profile)
-    row("链接标题过滤", pattern_var, 4)
-    row("最多导出数量", limit_var, 5)
-    row("最多进入几层URL", depth_var, 6)
-    row("成文件夹链接数", folder_threshold_var, 7)
-    row("请求延迟秒", request_delay_var, 8)
-    row("请求随机浮动秒", request_jitter_var, 9)
-    row("429暂停秒", rate_pause_var, 10)
-    row("429重试次数", rate_retries_var, 11)
-    row("调试端口", port_var, 12)
-    tk.Checkbutton(form, text="保存入口正文", variable=overview_var).grid(row=13, column=1, sticky="w", pady=5)
-    tk.Checkbutton(form, text="跳过视频页/视频贴链接", variable=skip_video_var).grid(row=14, column=1, sticky="w", pady=5)
-    tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=15, column=1, sticky="w", pady=5)
+    browser_row(4)
+    row("链接标题过滤", pattern_var, 5)
+    row("最多导出数量", limit_var, 6)
+    row("最多进入几层URL", depth_var, 7)
+    row("成文件夹链接数", folder_threshold_var, 8)
+    row("请求延迟秒", request_delay_var, 9)
+    row("请求随机浮动秒", request_jitter_var, 10)
+    row("429暂停秒", rate_pause_var, 11)
+    row("429重试次数", rate_retries_var, 12)
+    row("调试端口", port_var, 13)
+    tk.Checkbutton(form, text="保存入口正文", variable=overview_var).grid(row=14, column=1, sticky="w", pady=5)
+    tk.Checkbutton(form, text="跳过视频页/视频贴链接", variable=skip_video_var).grid(row=15, column=1, sticky="w", pady=5)
+    tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=16, column=1, sticky="w", pady=5)
 
     actions = tk.Frame(root, padx=14, pady=4)
     actions.pack(fill="x")
@@ -1938,6 +1969,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", help="Output directory")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Chrome remote debugging port")
     parser.add_argument("--profile-dir", help=f"Chrome profile dir. Omit to auto-use {default_profile_path()}")
+    parser.add_argument("--browser-path", help="Optional Chrome/Edge/Chromium executable path")
     parser.add_argument("--auth-file", help=f"Auth cookie file. Omit to auto-use {default_auth_path()}")
     parser.add_argument("--skip-auth-load", action="store_true", help="Do not load saved auth cookies before export")
     parser.add_argument("--wait-login", action="store_true", help="Pause for manual login before exporting")
