@@ -65,7 +65,7 @@ skills/run-wandao/scripts/launch_wandao.py
 
 这个脚本会自动定位万能导项目目录；如果本机没有项目目录，会尝试从 GitHub 克隆，然后调用 `wandao.py` 启动程序。
 
-它适合给不熟悉参数的用户使用：用户把 Skill 导入 AI 工具后，可以直接让 AI 分析知识库链接，推荐导出参数，并启动万能导。
+它适合给不想阅读项目文档、也不熟悉参数的用户使用：用户把 Skill 导入 AI 工具后，只需要说 `Use $run-wandao`，AI 会先向用户索要要导出的知识库链接；拿到链接后再识别平台、推荐参数，并调用脚本启动导出。
 
 在 Windows PowerShell 中导入：
 
@@ -84,7 +84,19 @@ cp -R ./skills/run-wandao ~/.codex/skills/
 导入后，在新的 AI 对话中可以这样说：
 
 ```text
-Use $run-wandao 帮我分析这个知识库链接，推荐导出参数并启动万能导：<你的链接>
+Use $run-wandao
+```
+
+AI 会先询问：
+
+```text
+请发送你要导出的知识库链接。
+```
+
+也可以直接把链接一起发过去：
+
+```text
+Use $run-wandao 帮我导出这个知识库：<你的链接>
 ```
 
 如果用户没有克隆本项目，Skill 里的启动脚本会尝试自动定位本机已有的万能导目录；找不到时会从 GitHub 克隆到 `~/.wandao/wandao`。

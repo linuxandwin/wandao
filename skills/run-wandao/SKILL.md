@@ -1,6 +1,6 @@
 ---
 name: run-wandao
-description: Use this skill when the user wants AI to directly run Wandao from a Codex Skill, launch the Wandao GUI, export an authorized knowledge base, infer the provider from a URL, or recommend export parameters before running. The skill must call its bundled launch_wandao.py script instead of only explaining manual commands.
+description: "Use this skill when the user wants to run Wandao without reading project docs: ask for the knowledge base URL if it is missing, infer the provider, recommend safe parameters, and directly call the bundled launch_wandao.py script to start the GUI or run an authorized export."
 ---
 
 # Run Wandao
@@ -15,7 +15,12 @@ The launcher script then locates or downloads the Wandao repository and calls `w
 
 ## Required Behavior
 
-When the user invokes `$run-wandao`, do not stop at explanation. Run the launcher script unless the user only asks for documentation.
+When the user invokes `$run-wandao`, do not stop at explanation.
+
+- If the user did not provide a URL, ask for the knowledge base URL first. Do not open an empty GUI as the first response.
+- If the user provided a URL and asks to export, crawl, fetch, or start, call the launcher script with `--url "<url>" --export`.
+- If the user provided a URL but only asks for parameter advice, call the launcher script with `--url "<url>" --dry-run`.
+- If the user explicitly wants a GUI, call the launcher script with `--url "<url>"` when a URL is available.
 
 Use the absolute path of this skill directory when running the script. If the skill is installed at `~/.codex/skills/run-wandao`, run:
 
@@ -32,25 +37,26 @@ python skills/run-wandao/scripts/launch_wandao.py
 ## Normal Flow
 
 1. Check that the user is exporting content they are allowed to access.
-2. If the user gave a URL, run a dry run first so the user can see the detected provider and recommended parameters:
+2. If there is no URL in the user message, ask: "Please send the knowledge base URL you want to export."
+3. If the user gave a URL, run a dry run first only when they ask for recommendations or when the URL/provider is uncertain:
 
    ```bash
    python <this-skill-dir>/scripts/launch_wandao.py --url "<url>" --dry-run
    ```
 
-3. If the user wants a GUI, run:
+4. If the user wants a GUI, run:
 
    ```bash
    python <this-skill-dir>/scripts/launch_wandao.py --url "<url>"
    ```
 
-4. If the user wants the AI to run the export directly, run:
+5. If the user wants the AI to run the export/crawl directly, run:
 
    ```bash
    python <this-skill-dir>/scripts/launch_wandao.py --url "<url>" --export
    ```
 
-5. If no URL is available, open the unified GUI:
+6. If the user explicitly says they just want to open the tool without a URL, open the unified GUI:
 
    ```bash
    python <this-skill-dir>/scripts/launch_wandao.py
@@ -101,3 +107,5 @@ Use these short explanations when the user is unsure:
 - Skip video pages: avoid creating empty Markdown for video-only pages.
 
 The tool stores cookies only, not account passwords. If login is needed, tell the user to complete login in the opened browser and then save credentials in the GUI.
+
+If command-line export fails because the site requires login or directory selection, switch to GUI mode with the same URL and tell the user to login/read the directory in the opened window.
