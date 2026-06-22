@@ -136,6 +136,20 @@ def detect_provider(url: str | None) -> str | None:
     return None
 
 
+def unsupported_url_hint(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host.endswith("devops.aliyun.com") or host.endswith("yunxiao.aliyun.com"):
+        return (
+            "This looks like an Alibaba Cloud Yunxiao/DevOps entry. Wandao currently supports "
+            "Aliyun Thoughts workspace URLs such as https://thoughts.aliyun.com/workspaces/<id>/overview, "
+            "not generic devops.aliyun.com pages."
+        )
+    return None
+
+
 def install_requirements(repo: Path, python: str, skip_install: bool) -> None:
     requirements = repo / "requirements.txt"
     if skip_install or not requirements.exists():
@@ -263,6 +277,9 @@ def main(argv: list[str]) -> int:
 
     provider = args.provider or detect_provider(args.url)
     if not provider and args.url:
+        hint = unsupported_url_hint(args.url)
+        if hint:
+            raise SystemExit(hint)
         raise SystemExit("Cannot infer provider from URL. Pass --provider explicitly.")
 
     export_mode = bool(args.export or (args.dry_run and args.url))

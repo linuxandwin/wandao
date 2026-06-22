@@ -65,6 +65,8 @@ The launcher can infer providers from URL hosts:
 - `feishu.cn/wiki` -> `feishu`
 - `thoughts.aliyun.com/workspaces` -> `aliyun-thoughts`
 
+If the user says "Alibaba Cloud Yunxiao" or "Alibaba Cloud DevOps", inspect the actual URL first. Use `aliyun-thoughts` only for `thoughts.aliyun.com/workspaces/...` URLs. Generic `devops.aliyun.com` pages are not supported by the current exporter.
+
 If a URL is ambiguous, ask the user for the provider or pass `--provider`.
 
 ## Recommended Parameters
@@ -99,4 +101,3 @@ Use these short explanations when the user is unsure:
 - Skip video pages: avoid creating empty Markdown for video-only pages.
 
 The tool stores cookies only, not account passwords. If login is needed, tell the user to complete login in the opened browser and then save credentials in the GUI.
-
