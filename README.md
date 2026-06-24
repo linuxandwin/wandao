@@ -1,52 +1,60 @@
 # 万能导 Wandao
 
-> 多平台知识库 Markdown 导出工具，用自动化脚本代替用户手动打开页面、复制正文、保存文件的重复劳动。
+> 让知识没有壁垒，多平台文档互转。用自动化脚本代替用户手动打开页面、复制正文、整理目录、搬运文档的重复劳动。
 
 [![License](https://img.shields.io/github/license/tllovesxs/wandao)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#系统要求)
 [![GitHub](https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black)](https://github.com/tllovesxs/wandao)
 
-万能导适合把你有权限访问的项目教学资料、团队知识库、课程文档导出为本地 Markdown，既可以一键全部导出，也可以按目录选择指定内容。导出后可以和源码项目放在一起，再交给 AI 阅读，让 AI 同时理解“教学文档 + 真实代码 + 项目结构”，更适合系统学习大型项目。
+万能导希望解决一个很朴素的问题：知识不应该被平台格式、复制粘贴和目录迁移卡住。你可以把自己有权限访问的项目教学资料、团队知识库、课程文档转换为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台里，尽量保留目录层级和正文图片。
+
+导出的文档可以和源码项目放在一起，再交给 AI 阅读，让 AI 同时理解“教学文档 + 真实代码 + 项目结构”。这样学习大型项目时，资料不再散落在多个页面里，提问也不再只是孤立地复制一小段内容。
 
 Author: `tllovesxs`
+
+## 项目信息
+
+| 项目 | 内容 |
+|------|------|
+| GitHub | [tllovesxs/wandao](https://github.com/tllovesxs/wandao) |
+| 发行版下载 | [Releases](https://github.com/tllovesxs/wandao/releases) |
+| 问题反馈 | [Issues](https://github.com/tllovesxs/wandao/issues) |
+| 作者微信 | `pressure_spring` |
+| 联系邮箱 | `tl200599@163.com` |
 
 ## 功能特性
 
 | 功能 | 说明 |
 |------|------|
-| 多平台导出 | 支持知识星球任意项目、语雀任意知识库、飞书任意 Wiki、阿里云 Thoughts 任意工作区 |
+| 多平台互转 | 支持多个知识库平台导出为 Markdown，并支持本地 Markdown 导入飞书 Wiki |
 | 图形化界面 | 提供统一启动器和各平台导出界面，不熟悉命令行也能使用 |
 | 目录选择 | 先读取目录，再选择全部导出或只导出部分章节 |
+| 进度反馈 | 导出、导入、读取目录时显示全局进度条和实时日志 |
 | 增量更新 | 已导出的文档会跳过，缺失或需要深入的链接可以继续补齐 |
-| Markdown 输出 | 按目录结构保存为 Markdown，并生成入口索引和导出报告 |
+| Markdown 中转 | 按目录结构保存为 Markdown，并生成入口索引和处理报告 |
+| 文档导入 | 支持将本地 Markdown 批量导入飞书 Wiki，并恢复多层文件夹结构 |
 | 评论区可选 | 知识星球导出可选择是否同时保存页面可见评论区内容 |
 | 图片本地化 | 尽量下载正文图片到本地 `assets/` 目录，减少后续失效风险 |
 | 浏览器自动查找 | 自动扫描 Chrome、Edge、Chromium，也支持用户手动指定浏览器 |
 | 请求节奏控制 | 内置固定延迟和随机浮动，尽量模拟正常阅读和复制粘贴节奏 |
 | 停止按钮 | 导出过程中可以随时停止，已完成的文件会保留 |
-| AI Skill 启动 | 内置 `run-wandao` Skill，可让 AI 根据链接推荐参数并调用脚本启动工具 |
 
 ## 截图预览
 
-统一启动器：
+桌面端主界面：
 
 <p align="left">
-  <img src="docs/images/wandao-launcher.png" alt="万能导启动器" width="520">
-</p>
-
-多平台导出界面：
-
-<p align="left">
-  <img src="docs/images/wandao-exporter-guis.png" alt="万能导多平台导出界面" width="900">
+  <img src="docs/images/wandao-exporter-guis.png" alt="万能导桌面端主界面" width="900">
 </p>
 
 ## 支持范围
 
-- 支持知识星球任意项目、专栏、帖子和文章页导出。
-- 支持语雀任意知识库导出。
-- 支持飞书任意 Wiki 知识库导出。
-- 支持阿里云 Thoughts 任意工作区导出。
+- 支持知识星球任意项目、专栏、帖子和文章页导出为 Markdown。
+- 支持语雀任意知识库导出为 Markdown。
+- 支持飞书任意 Wiki 知识库导出为 Markdown。
+- 支持阿里云 Thoughts 任意工作区导出为 Markdown。
+- 支持本地 Markdown 批量导入飞书 Wiki，并尽量恢复多层目录结构。
 
 工具会使用本机 Chrome/Edge 的调试协议打开页面。登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。
 
@@ -54,7 +62,8 @@ Author: `tllovesxs`
 
 | 依赖 | 要求 |
 |------|------|
-| Python | 3.10 或更高版本 |
+| Python | 3.10 或更高版本，桌面版当前也会调用本机 Python 后端脚本 |
+| Node.js | 仅源码运行桌面版或参与开发时需要 |
 | 浏览器 | Chrome、Edge 或 Chromium |
 | 权限 | 用户需要拥有目标知识库的正常访问权限 |
 
@@ -68,13 +77,65 @@ Author: `tllovesxs`
 
 ## 快速开始
 
+### 快速使用：下载发行版
+
+1. 打开项目的 [Releases](https://github.com/tllovesxs/wandao/releases) 页面。
+2. 下载对应系统的安装包，例如 Windows 的 `.exe`，或 macOS 的 `.zip` 压缩包。
+3. 安装后打开 `Wandao`。
+4. 选择要导出的知识库类型，填写入口链接，按界面提示登录、读取目录、选择范围并导出。
+
+普通用户推荐直接下载发行版，不需要手动拉取源码。
+
+### 协助开发：拉取源码
+
+如果你想参与开发、调试问题，或者当前还没有适合你系统的发行版，可以拉取源码运行桌面版。
+
+Windows PowerShell：
+
 ```powershell
 git clone https://github.com/tllovesxs/wandao.git
 cd wandao
+pip install -r requirements.txt
+cd wandao_electron
+npm install
+npm start
+```
+
+macOS/Linux：
+
+```bash
+git clone https://github.com/tllovesxs/wandao.git
+cd wandao
+python3 -m pip install -r requirements.txt
+cd wandao_electron
+npm install
+npm start
+```
+
+如果启动时提示 `electron` 不是可执行命令，通常是还没有在 `wandao_electron` 目录执行 `npm install`。
+
+### 发行包构建说明
+
+Windows 发行包可以在 Windows 本机通过 Electron Builder 生成。macOS 应用压缩包需要在 macOS 环境构建，推荐使用项目内置的 GitHub Actions workflow，或在 macOS 本机执行：
+
+```bash
+cd wandao_electron
+npm ci
+npm run build:mac
+```
+
+在 Windows 上准备发布时，可以先生成 Windows `.exe`，同时提供源码压缩包；真正的 macOS App `.zip` 由 macOS runner 构建后上传 Release。
+
+### 备用方式：Python 启动器
+
+```powershell
+git clone https://github.com/tllovesxs/wandao.git
+cd wandao
+pip install -r requirements.txt
 python wandao.py
 ```
 
-启动后选择要导出的知识库类型，然后点击“打开导出界面”。
+这个方式适合开发、调试，或者桌面版暂时无法启动时使用。启动后选择要导出的知识库类型，然后点击“打开导出界面”。
 
 查看支持的平台：
 
@@ -84,13 +145,37 @@ python wandao.py --list
 
 ## 基本流程
 
+### 导出为 Markdown
+
 1. 填写知识库入口 URL。
 2. 点击“登录并保存凭证”，在浏览器中完成登录。
 3. 点击“读取目录”，工具会读取并展示目录树。
 4. 勾选要导出的目录或文档。
-5. 点击“增量导出选中/全部”或“全量导出选中/全部”。
+5. 点击“开始导出”。如果勾选了“增量导出”，工具只补本地缺失内容；取消勾选则会重新导出选中内容。
 
 未读取目录时，默认导出该入口下可识别的全部内容。
+
+### 飞书 Markdown 导入全流程
+
+飞书导入比普通导出多了开放平台配置，建议第一次按下面顺序来，不要跳步：
+
+1. 在左侧选择“飞书 Markdown 导入”。
+2. 在“目标飞书 Wiki URL”里粘贴要导入到的 Wiki 页面链接。
+3. 在“Markdown 目录”里选择本地 `.md` 文件所在目录；如果只想先测一篇，可以在“单篇测试文件”里选一个 `.md`。
+4. 点击“打开飞书开放平台”，在飞书开放平台创建企业自建应用。
+5. 进入应用的“凭证与基础信息”，复制 `App ID` 和 `App Secret`，填回万能导，然后点击“保存 API 配置”。
+6. 点击“初始化开放平台权限”。工具会打开当前应用的权限页和版本发布页。请开通这些权限并发布新版本：`drive:drive`、`drive:file:upload`、`docs:permission.member:create`、`docs:document:import`、`docx:document`、`docx:document:write_only`、`wiki:wiki`。
+7. 点击“检查应用身份”。如果日志提示没有启用机器人，就在自动打开的机器人页面启用机器人能力，然后再次发布应用新版本。
+8. 点击“授权目标 Wiki 文档应用”。如果工具无法自动完成，请到目标 Wiki 页面右上角选择“... -> 更多 -> 添加文档应用”，搜索当前企业自建应用名称，并设置为可编辑。
+9. 点击“登录并保存凭证”。浏览器打开后登录飞书，确认能看到目标 Wiki 页面，再回到万能导点击“我已完成登录，保存凭证”。
+10. 点击“探测目标 Wiki”。成功后工具会识别 `spaceId` 和目标父级页面。
+11. 点击“生成计划”。这一步只扫描本地 Markdown，不会创建飞书文档，用来确认即将导入哪些文件。
+12. 点击“单篇导入测试”。确认一篇文档的标题、正文、图片和层级正常后，再继续。
+13. 点击“批量导入”。工具会按本地文件夹层级创建飞书文档，并尽量修复本地图片。
+
+飞书导入需要用户自己创建企业自建应用并填写 App ID / App Secret。工具只负责打开配置页面、保存本机配置、调用飞书 OpenAPI，不会替用户收集或上传密钥。如果导入时遇到 `99991672` 权限不足，工具会自动打开飞书返回的权限申请页。
+
+如果导入时报 `131006` 或 `no destination parent node permission`，说明不是开放平台 scope 没开，而是目标 Wiki 父页面没有把当前企业自建应用加入“文档应用”列表。请点击“授权目标 Wiki 文档应用”，或在目标 Wiki 右上角选择“... -> 更多 -> 添加文档应用”，搜索当前应用名称并添加为可编辑。
 
 ## 输出内容
 
@@ -112,64 +197,6 @@ exports/
 | `00-导出报告.json` | 导出统计、失败项、图片下载情况 |
 | `assets/` | 正文图片资源 |
 | `*.md` | 按目录结构导出的 Markdown 文档 |
-
-## AI Skill 一键运行
-
-仓库内置了一个 Codex Skill：`skills/run-wandao`。
-
-它不是单纯的提示词，而是会让 AI 直接调用 Skill 内置脚本：
-
-```text
-skills/run-wandao/scripts/launch_wandao.py
-```
-
-这个脚本会自动定位万能导项目目录；如果本机没有项目目录，会尝试从 GitHub 克隆，然后调用 `wandao.py` 启动程序。
-
-它适合给不想阅读项目文档、也不熟悉参数的用户使用：用户把 Skill 导入 AI 工具后，只需要说 `Use $run-wandao`，AI 会先向用户索要要导出的知识库链接；拿到链接后再识别平台、推荐参数，并调用脚本启动导出。
-
-### 导入 Skill
-
-Windows PowerShell：
-
-```powershell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
-Copy-Item -Recurse -Force ".\skills\run-wandao" "$env:USERPROFILE\.codex\skills\run-wandao"
-```
-
-macOS/Linux：
-
-```bash
-mkdir -p ~/.codex/skills
-cp -R ./skills/run-wandao ~/.codex/skills/
-```
-
-导入后，在新的 AI 对话中可以这样说：
-
-```text
-Use $run-wandao
-```
-
-AI 会先询问：
-
-```text
-请发送你要导出的知识库链接。
-```
-
-也可以直接把链接一起发过去：
-
-```text
-Use $run-wandao 帮我导出这个知识库：<你的链接>
-```
-
-如果用户没有克隆本项目，Skill 里的启动脚本会尝试自动定位本机已有的万能导目录；找不到时会从 GitHub 克隆到 `~/.wandao/wandao`。
-
-也可以手动运行 Skill 的启动脚本：
-
-```powershell
-python skills/run-wandao/scripts/launch_wandao.py
-python skills/run-wandao/scripts/launch_wandao.py --url "<你的链接>" --dry-run
-python skills/run-wandao/scripts/launch_wandao.py --url "<你的链接>" --export
-```
 
 ## 命令行示例
 
@@ -279,7 +306,8 @@ wandao/
 ├── export_yuque.py                   # 语雀导出器
 ├── export_feishu.py                  # 飞书导出器
 ├── export_aliyun_thoughts.py         # 阿里云 Thoughts 导出器
-├── skills/run-wandao/                # AI 一键运行 Skill
+├── import_feishu.py                  # 本地 Markdown 导入飞书 Wiki
+├── wandao_electron/                  # 统一 Electron 桌面端
 ├── prompts/项目学习导师提示词.md      # 项目学习提示词
 ├── docs/                             # 使用教程、合规说明和截图
 └── exports/                          # 默认导出目录，本地生成，不提交仓库

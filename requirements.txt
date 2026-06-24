@@ -1,2 +1,2 @@
-# Wandao uses only Python standard library modules.
 # Python 3.10+ is recommended.
+# Runtime currently uses the Python standard library only.

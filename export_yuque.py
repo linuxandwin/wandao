@@ -104,7 +104,14 @@ def start_chrome(port: int, profile_dir: Path, url: str, browser_path: str | Non
 
 def open_tab(port: int, url: str) -> None:
     encoded = urllib.parse.quote(url, safe="")
-    urllib.request.urlopen(f"http://127.0.0.1:{port}/json/new?{encoded}", timeout=5).close()
+    endpoint = f"http://127.0.0.1:{port}/json/new?{encoded}"
+    try:
+        urllib.request.urlopen(endpoint, timeout=5).close()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 405:
+            raise
+        request = urllib.request.Request(endpoint, method="PUT")
+        urllib.request.urlopen(request, timeout=5).close()
 
 
 def normalize_book_url(book_url: str) -> str:
@@ -614,6 +621,13 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
         emit(args, "Chrome opened. Log in to Yuque in the browser.")
         if wait_callback:
             wait_callback()
+        elif float(getattr(args, "login_wait_seconds", 0) or 0) > 0:
+            wait_seconds = float(getattr(args, "login_wait_seconds", 0) or 0)
+            deadline = time.time() + wait_seconds
+            emit(args, f"请在浏览器中完成登录，工具将在 {int(wait_seconds)} 秒后自动保存凭证。")
+            while time.time() < deadline:
+                check_stopped(args)
+                time.sleep(1)
         else:
             input("After login is complete and the Yuque book page is visible, press Enter...")
         check_stopped(args)
@@ -632,10 +646,12 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
 def run_gui() -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext, ttk
+    from gui_utils import create_scrollable_body
 
     root = tk.Tk()
     root.title("语雀知识库导出工具")
     root.geometry("980x780")
+    body = create_scrollable_body(root)
 
     book_var = tk.StringVar(value=DEFAULT_BOOK_URL)
     output_var = tk.StringVar(value=str((PROJECT_DIR / "exports" / "yuque").resolve()))
@@ -949,7 +965,7 @@ def run_gui() -> int:
             return
         run_worker("全量覆盖导出", args, lambda: export_book(args))
 
-    form = tk.Frame(root, padx=14, pady=12)
+    form = tk.Frame(body, padx=14, pady=12)
     form.pack(fill="x")
     form.columnconfigure(1, weight=1)
 
@@ -975,7 +991,7 @@ def run_gui() -> int:
     row("请求随机浮动秒", request_jitter_var, 7)
     tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=8, column=1, sticky="w", pady=5)
 
-    actions = tk.Frame(root, padx=14, pady=4)
+    actions = tk.Frame(body, padx=14, pady=4)
     actions.pack(fill="x")
     buttons.extend(
         [
@@ -991,7 +1007,7 @@ def run_gui() -> int:
     for button in buttons:
         button.pack(side="left", padx=5, pady=6)
 
-    toc_frame = tk.LabelFrame(root, text="目录选择", padx=10, pady=8)
+    toc_frame = tk.LabelFrame(body, text="目录选择", padx=10, pady=8)
     toc_frame.pack(fill="both", expand=False, padx=14, pady=8)
     toc_header = tk.Frame(toc_frame)
     toc_header.pack(fill="x")
@@ -1011,14 +1027,14 @@ def run_gui() -> int:
     toc_tree.bind("<space>", toggle_toc_selection)
 
     note = tk.Label(
-        root,
+        body,
         text="说明：先读取目录可选择导出范围；未读取目录时默认导出全部。凭证文件保存的是登录 Cookie，不保存密码。",
         anchor="w",
         padx=14,
     )
     note.pack(fill="x")
 
-    log_text = scrolledtext.ScrolledText(root, height=12, state="disabled")
+    log_text = scrolledtext.ScrolledText(body, height=12, state="disabled")
     log_text.pack(fill="both", expand=True, padx=14, pady=12)
     poll_log()
     root.mainloop()
@@ -1029,6 +1045,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export Yuque book to Markdown.")
     parser.add_argument("--gui", action="store_true", help="Open the graphical interface")
     parser.add_argument("--login", action="store_true", help="Open browser, let you log in, then save auth cookies")
+    parser.add_argument("--login-wait-seconds", type=float, default=0.0, help="For non-interactive GUI wrappers, wait this many seconds before saving login cookies")
+    parser.add_argument("--scan-toc", action="store_true", help="Read the Yuque book directory and print it as JSON, without exporting")
     parser.add_argument("--book-url", help="Yuque book URL, for example https://www.yuque.com/user/book")
     parser.add_argument("--output", help="Output directory")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Chrome remote debugging port")
@@ -1039,6 +1057,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait-login", action="store_true", help="Pause for manual login before exporting")
     parser.add_argument("--incremental", action="store_true", help="Only export documents missing from local Markdown")
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
+    parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id/uuid, repeatable")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress after N documents")
     parser.add_argument("--request-delay", type=float, default=0.8, help="Fixed seconds to wait before each document/API request")
@@ -1059,6 +1078,8 @@ def main(argv: list[str]) -> int:
             raise ExportError("--book-url is required")
         if args.login:
             report = login_and_save_auth(args)
+        elif args.scan_toc:
+            report = scan_book_toc(args)
         else:
             if not args.output:
                 raise ExportError("--output is required unless --login is used")
@@ -1069,8 +1090,11 @@ def main(argv: list[str]) -> int:
     except Exception as exc:
         print(f"Export failed: {exc}", file=sys.stderr)
         return 1
-    keys = ("cookieCount", "authFile", "totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
-    print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
+    if args.scan_toc:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        keys = ("cookieCount", "authFile", "totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
+        print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
     return 0
 
 

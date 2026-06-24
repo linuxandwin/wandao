@@ -113,6 +113,7 @@ class CDPClient:
             self.path += "?" + parsed.query
         self.sock: socket.socket | None = None
         self.next_id = 0
+        self.pending_events: list[dict[str, Any]] = []
 
     def connect(self) -> None:
         sock = socket.create_connection((self.host, self.port), timeout=15)
@@ -157,7 +158,34 @@ class CDPClient:
                 if "error" in message:
                     raise ExportError(f"CDP {method} failed: {message['error']}")
                 return message
+            if message.get("method"):
+                self.pending_events.append(message)
         raise ExportError(f"Timed out waiting for CDP response: {method}")
+
+    def wait_for_event(
+        self,
+        method: str,
+        *,
+        timeout: float = 30,
+        predicate: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
+        def matches(message: dict[str, Any]) -> bool:
+            if message.get("method") != method:
+                return False
+            return predicate(message) if predicate else True
+
+        for index, message in enumerate(self.pending_events):
+            if matches(message):
+                return self.pending_events.pop(index)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            message = self._recv_json(timeout=max(0.5, deadline - time.time()))
+            if matches(message):
+                return message
+            if message.get("method"):
+                self.pending_events.append(message)
+        raise ExportError(f"Timed out waiting for CDP event: {method}")
 
     def evaluate(self, expression: str, timeout: float = 60) -> Any:
         response = self.send(
@@ -355,7 +383,14 @@ def page_for_workspace(port: int, workspace_id: str) -> dict[str, Any] | None:
 
 def open_tab(port: int, url: str) -> None:
     encoded = urllib.parse.quote(url, safe="")
-    urllib.request.urlopen(f"http://127.0.0.1:{port}/json/new?{encoded}", timeout=5).close()
+    endpoint = f"http://127.0.0.1:{port}/json/new?{encoded}"
+    try:
+        urllib.request.urlopen(endpoint, timeout=5).close()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 405:
+            raise
+        request = urllib.request.Request(endpoint, method="PUT")
+        urllib.request.urlopen(request, timeout=5).close()
 
 
 def emit(args: argparse.Namespace | None, message: str) -> None:
@@ -363,7 +398,7 @@ def emit(args: argparse.Namespace | None, message: str) -> None:
     if callback:
         callback(message)
     else:
-        print(message)
+        print(message, flush=True)
 
 
 def default_auth_path() -> Path:
@@ -931,6 +966,13 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
         emit(args, "Chrome opened. Log in to Aliyun Thoughts in the browser.")
         if wait_callback:
             wait_callback()
+        elif float(getattr(args, "login_wait_seconds", 0) or 0) > 0:
+            wait_seconds = float(getattr(args, "login_wait_seconds", 0) or 0)
+            deadline = time.time() + wait_seconds
+            emit(args, f"请在浏览器中完成登录，工具将在 {int(wait_seconds)} 秒后自动保存凭证。")
+            while time.time() < deadline:
+                check_stopped(args)
+                time.sleep(1)
         else:
             input("After login is complete and the workspace page is visible, press Enter...")
         check_stopped(args)
@@ -949,10 +991,12 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
 def run_gui() -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext, ttk
+    from gui_utils import create_scrollable_body
 
     root = tk.Tk()
     root.title("阿里云 Thoughts 文档导出工具")
     root.geometry("980x780")
+    body = create_scrollable_body(root)
 
     default_workspace = ""
     workspace_var = tk.StringVar(value=default_workspace)
@@ -1270,7 +1314,7 @@ def run_gui() -> int:
             return
         run_worker("全量覆盖导出", args, lambda: export_workspace(args))
 
-    form = tk.Frame(root, padx=14, pady=12)
+    form = tk.Frame(body, padx=14, pady=12)
     form.pack(fill="x")
     form.columnconfigure(1, weight=1)
 
@@ -1296,7 +1340,7 @@ def run_gui() -> int:
     row("请求随机浮动秒", request_jitter_var, 7)
     tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=8, column=1, sticky="w", pady=5)
 
-    actions = tk.Frame(root, padx=14, pady=4)
+    actions = tk.Frame(body, padx=14, pady=4)
     actions.pack(fill="x")
     buttons.extend(
         [
@@ -1312,7 +1356,7 @@ def run_gui() -> int:
     for button in buttons:
         button.pack(side="left", padx=5, pady=6)
 
-    toc_frame = tk.LabelFrame(root, text="目录选择", padx=10, pady=8)
+    toc_frame = tk.LabelFrame(body, text="目录选择", padx=10, pady=8)
     toc_frame.pack(fill="both", expand=False, padx=14, pady=8)
     toc_header = tk.Frame(toc_frame)
     toc_header.pack(fill="x")
@@ -1332,14 +1376,14 @@ def run_gui() -> int:
     toc_tree.bind("<space>", toggle_toc_selection)
 
     note = tk.Label(
-        root,
+        body,
         text="说明：先读取目录可选择导出范围；未读取目录时默认导出全部。凭证文件保存的是登录 Cookie，不保存密码。",
         anchor="w",
         padx=14,
     )
     note.pack(fill="x")
 
-    log_text = scrolledtext.ScrolledText(root, height=12, state="disabled")
+    log_text = scrolledtext.ScrolledText(body, height=12, state="disabled")
     log_text.pack(fill="both", expand=True, padx=14, pady=12)
     poll_log()
     root.mainloop()
@@ -1350,6 +1394,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export Aliyun Thoughts workspace to Markdown.")
     parser.add_argument("--gui", action="store_true", help="Open the graphical interface")
     parser.add_argument("--login", action="store_true", help="Open browser, let you log in, then save auth cookies")
+    parser.add_argument("--login-wait-seconds", type=float, default=0.0, help="For non-interactive GUI wrappers, wait this many seconds before saving login cookies")
+    parser.add_argument("--scan-toc", action="store_true", help="Read the Thoughts workspace directory and print it as JSON, without exporting")
     parser.add_argument("--workspace-url", help="Thoughts workspace URL, usually .../workspaces/<id>/overview")
     parser.add_argument("--workspace-id", help="Optional workspace id override")
     parser.add_argument("--output", help="Output directory")
@@ -1361,6 +1407,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait-login", action="store_true", help="Pause for manual login before exporting")
     parser.add_argument("--incremental", action="store_true", help="Only export documents missing from local Markdown")
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
+    parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id, repeatable")
     parser.add_argument("--render-timeout", type=int, default=20, help="Seconds to wait for each document render")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress after N documents")
@@ -1382,6 +1429,8 @@ def main(argv: list[str]) -> int:
             raise ExportError("--workspace-url is required")
         if args.login:
             report = login_and_save_auth(args)
+        elif args.scan_toc:
+            report = scan_workspace_tree(args)
         else:
             if not args.output:
                 raise ExportError("--output is required unless --login is used")
@@ -1392,8 +1441,11 @@ def main(argv: list[str]) -> int:
     except Exception as exc:
         print(f"Export failed: {exc}", file=sys.stderr)
         return 1
-    keys = ("cookieCount", "authFile", "totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
-    print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
+    if args.scan_toc:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        keys = ("cookieCount", "authFile", "totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
+        print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
     return 0
 
 

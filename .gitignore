@@ -5,11 +5,15 @@ __pycache__/
 .aliyun-thoughts-chrome-profile/
 .yuque-chrome-profile/
 .feishu-chrome-profile/
+.feishu-import-chrome-profile/
+.feishu-openapi-profile/
 .zsxq-chrome-profile/
+.tmp-*/
 .aliyun_thoughts_auth.json
 .yuque_auth.json
 .feishu_auth.json
 .zsxq_auth.json
+.feishu_import_config.json
 
 # Exported private content
 exports/
@@ -21,3 +25,24 @@ exports/
 Thumbs.db
 .vscode/
 .idea/
+
+# Electron
+import_feishu_electron/node_modules/
+import_feishu_electron/dist/
+import_feishu_electron/out/
+wandao_electron/node_modules/
+wandao_electron/dist/
+wandao_electron/dist-*/
+wandao_electron/release/
+wandao_electron/release-*/
+wandao_electron/out/
+*.asar
+
+# Local release/debug artifacts
+*.blockmap
+*.dmg
+*.exe
+*.zip
+browser_import_docx_result*.png
+openplatform-*.png
+wiki-*.png

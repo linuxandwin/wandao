@@ -1,7 +1,7 @@
 [project]
 name = "wandao"
-version = "0.1.0"
-description = "万能导：多平台知识库 Markdown 导出工具"
+version = "1.0.4"
+description = "万能导：多平台知识库 Markdown 导出与互转工具"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -25,4 +25,6 @@ py-modules = [
   "export_yuque",
   "export_feishu",
   "export_zsxq",
+  "import_feishu",
+  "gui_utils",
 ]

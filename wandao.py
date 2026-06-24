@@ -54,17 +54,19 @@ def run_provider(provider: str, args: list[str]) -> int:
 def run_launcher_gui() -> int:
     import tkinter as tk
     from tkinter import messagebox, ttk
+    from gui_utils import create_scrollable_body
 
     root = tk.Tk()
     root.title("万能导 Wandao")
     root.geometry("620x360")
+    body = create_scrollable_body(root)
 
     provider_keys = list(PROVIDERS)
     provider_var = tk.StringVar(value=provider_keys[0])
 
-    tk.Label(root, text="选择要导出的知识库类型", anchor="w").pack(fill="x", padx=18, pady=(18, 6))
+    tk.Label(body, text="选择要导出的知识库类型", anchor="w").pack(fill="x", padx=18, pady=(18, 6))
     selector = ttk.Combobox(
-        root,
+        body,
         textvariable=provider_var,
         state="readonly",
         values=[f"{key} - {PROVIDERS[key]['label']}" for key in provider_keys],
@@ -87,7 +89,7 @@ def run_launcher_gui() -> int:
     selector.current(0)
     sync_hint()
 
-    tk.Label(root, textvariable=hint_var, justify="left", anchor="w").pack(fill="x", padx=18, pady=18)
+    tk.Label(body, textvariable=hint_var, justify="left", anchor="w").pack(fill="x", padx=18, pady=18)
 
     def open_provider_gui() -> None:
         selected = provider_var.get().split(" - ", 1)[0]
@@ -104,14 +106,14 @@ def run_launcher_gui() -> int:
         else:
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(ROOT)])
 
-    actions = tk.Frame(root)
+    actions = tk.Frame(body)
     actions.pack(fill="x", padx=18, pady=8)
     tk.Button(actions, text="打开导出界面", command=open_provider_gui, width=18).pack(side="left", padx=(0, 10))
     tk.Button(actions, text="打开项目目录", command=open_project_dir, width=14).pack(side="left")
     tk.Button(actions, text="退出", command=root.destroy, width=10).pack(side="right")
 
     tk.Label(
-        root,
+        body,
         text="提示：请只导出自己拥有权限的内容；工具内置可调延迟和停止按钮，避免高频请求。",
         anchor="w",
     ).pack(fill="x", padx=18, pady=(12, 0))

@@ -1,6 +1,0 @@
-interface:
-  display_name: "Run Wandao"
-  short_description: "Ask for a URL, then launch Wandao to export it."
-  default_prompt: "Use $run-wandao to ask me for the knowledge base URL, then start Wandao to export it."
-policy:
-  allow_implicit_invocation: true

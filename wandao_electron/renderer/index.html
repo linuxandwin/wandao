@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>万能导 Wandao</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <h1>万能导 Wandao</h1>
+      <p class="subtitle">让知识没有壁垒，多平台文档互转</p>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <button class="nav-item active" data-tool="zsxq">知识星球导出</button>
+        <button class="nav-item" data-tool="yuque">语雀导出</button>
+        <button class="nav-item" data-tool="feishu-export">飞书导出</button>
+        <button class="nav-item" data-tool="aliyun">阿里 Thoughts 导出</button>
+        <button class="nav-item" data-tool="feishu-import">飞书 Markdown 导入</button>
+      </aside>
+
+      <main class="app-main">
+        <section class="tool-heading">
+          <h2 id="tool-title">知识星球任意项目/专栏导出</h2>
+          <p id="tool-description">将知识星球内容导出为本地 Markdown 文件</p>
+        </section>
+
+        <div id="content-area"></div>
+
+        <section class="progress-section" id="progress-section" hidden>
+          <div class="progress-header">
+            <span id="progress-title">准备中</span>
+            <span id="progress-percent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <div class="progress-detail" id="progress-detail">等待任务开始</div>
+        </section>
+
+        <section class="log-section">
+          <div class="log-header">
+            <h3>运行日志</h3>
+            <div>
+              <button class="btn-text" id="btn-settings">设置</button>
+              <button class="btn-text" id="btn-about">关于</button>
+              <button class="btn-text" id="btn-clear-log">清空</button>
+            </div>
+          </div>
+          <div class="log-content" id="log-content"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <template id="template-zsxq">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-group">
+          <label for="zsxq-url">知识星球入口 URL <span class="required">*</span></label>
+          <input type="text" id="zsxq-url" placeholder="https://wx.zsxq.com/columns/...">
+        </div>
+        <div class="form-group">
+          <label for="zsxq-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="zsxq-output" placeholder="留空使用默认 exports/zsxq">
+            <button class="btn-secondary" id="zsxq-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="zsxq-max-depth">最多进入几层 URL</label>
+                <input type="number" id="zsxq-max-depth" value="2" min="0">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-delay">请求延迟秒</label>
+                <input type="number" id="zsxq-delay" value="1.0" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-jitter">随机浮动秒</label>
+                <input type="number" id="zsxq-jitter" value="0.5" min="0" step="0.1">
+              </div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-incremental" checked>
+              <span>增量导出</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-include-comments">
+              <span>同时导出评论区</span>
+            </label>
+          </div>
+        </details>
+      </section>
+      <section class="action-section">
+        <button class="btn-primary" id="zsxq-login">登录并保存凭证</button>
+        <button class="btn-secondary login-done-button" id="zsxq-login-done" hidden>我已完成登录，保存凭证</button>
+        <button class="btn-primary" id="zsxq-export">开始导出</button>
+        <button class="btn-danger" id="zsxq-stop" disabled>停止</button>
+        <button class="btn-secondary" id="zsxq-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-yuque">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-group">
+          <label for="yuque-url">语雀知识库 URL <span class="required">*</span></label>
+          <input type="text" id="yuque-url" placeholder="https://www.yuque.com/<namespace>/<book>">
+        </div>
+        <div class="form-group">
+          <label for="yuque-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="yuque-output" placeholder="留空使用默认 exports/yuque">
+            <button class="btn-secondary" id="yuque-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="yuque-delay">请求延迟秒</label>
+                <input type="number" id="yuque-delay" value="0.8" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="yuque-jitter">随机浮动秒</label>
+                <input type="number" id="yuque-jitter" value="0.4" min="0" step="0.1">
+              </div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="yuque-incremental" checked>
+              <span>增量导出</span>
+            </label>
+          </div>
+        </details>
+      </section>
+      <section class="action-section">
+        <button class="btn-primary" id="yuque-login">登录并保存凭证</button>
+        <button class="btn-secondary login-done-button" id="yuque-login-done" hidden>我已完成登录，保存凭证</button>
+        <button class="btn-primary" id="yuque-export">开始导出</button>
+        <button class="btn-danger" id="yuque-stop" disabled>停止</button>
+        <button class="btn-secondary" id="yuque-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-feishu-export">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-group">
+          <label for="feishu-export-url">飞书 Wiki URL <span class="required">*</span></label>
+          <input type="text" id="feishu-export-url" placeholder="https://<tenant>.feishu.cn/wiki/<token>">
+        </div>
+        <div class="form-group">
+          <label for="feishu-export-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="feishu-export-output" placeholder="留空使用默认 exports/feishu">
+            <button class="btn-secondary" id="feishu-export-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="feishu-export-delay">请求延迟秒</label>
+                <input type="number" id="feishu-export-delay" value="0.8" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="feishu-export-jitter">随机浮动秒</label>
+                <input type="number" id="feishu-export-jitter" value="0.4" min="0" step="0.1">
+              </div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="feishu-export-incremental" checked>
+              <span>增量导出</span>
+            </label>
+          </div>
+        </details>
+      </section>
+      <section class="action-section">
+        <button class="btn-primary" id="feishu-export-login">登录并保存凭证</button>
+        <button class="btn-secondary login-done-button" id="feishu-export-login-done" hidden>我已完成登录，保存凭证</button>
+        <button class="btn-primary" id="feishu-export-export">开始导出</button>
+        <button class="btn-danger" id="feishu-export-stop" disabled>停止</button>
+        <button class="btn-secondary" id="feishu-export-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-aliyun">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-group">
+          <label for="aliyun-url">阿里云 Thoughts 工作区 URL <span class="required">*</span></label>
+          <input type="text" id="aliyun-url" placeholder="https://thoughts.aliyun.com/workspaces/<id>/overview">
+        </div>
+        <div class="form-group">
+          <label for="aliyun-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="aliyun-output" placeholder="留空使用默认 exports/aliyun-thoughts">
+            <button class="btn-secondary" id="aliyun-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="aliyun-delay">请求延迟秒</label>
+                <input type="number" id="aliyun-delay" value="0.8" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="aliyun-jitter">随机浮动秒</label>
+                <input type="number" id="aliyun-jitter" value="0.4" min="0" step="0.1">
+              </div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="aliyun-incremental" checked>
+              <span>增量导出</span>
+            </label>
+          </div>
+        </details>
+      </section>
+      <section class="action-section">
+        <button class="btn-primary" id="aliyun-login">登录并保存凭证</button>
+        <button class="btn-secondary login-done-button" id="aliyun-login-done" hidden>我已完成登录，保存凭证</button>
+        <button class="btn-primary" id="aliyun-export">开始导出</button>
+        <button class="btn-danger" id="aliyun-stop" disabled>停止</button>
+        <button class="btn-secondary" id="aliyun-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

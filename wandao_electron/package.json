@@ -1,0 +1,89 @@
+{
+  "name": "wandao",
+  "version": "1.0.4",
+  "description": "Wandao multi-platform document conversion tool",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:all": "electron-builder -mw"
+  },
+  "keywords": [
+    "knowledge-base",
+    "export",
+    "feishu",
+    "markdown",
+    "import",
+    "wandao"
+  ],
+  "author": "tllovesxs",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.wandao.app",
+    "productName": "Wandao",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../import_feishu.py",
+        "to": "python/import_feishu.py"
+      },
+      {
+        "from": "../export_feishu.py",
+        "to": "python/export_feishu.py"
+      },
+      {
+        "from": "../export_zsxq.py",
+        "to": "python/export_zsxq.py"
+      },
+      {
+        "from": "../export_yuque.py",
+        "to": "python/export_yuque.py"
+      },
+      {
+        "from": "../export_aliyun_thoughts.py",
+        "to": "python/export_aliyun_thoughts.py"
+      },
+      {
+        "from": "../gui_utils.py",
+        "to": "python/gui_utils.py"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Wandao",
+      "runAfterFinish": true
+    },
+    "mac": {
+      "target": [
+        "zip"
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.utilities"
+    }
+  },
+  "type": "commonjs"
+}

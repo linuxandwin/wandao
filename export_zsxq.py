@@ -1771,6 +1771,13 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
         emit(args, "Chrome opened. Log in to ZSXQ in the browser.")
         if wait_callback:
             wait_callback()
+        elif float(getattr(args, "login_wait_seconds", 0) or 0) > 0:
+            wait_seconds = float(getattr(args, "login_wait_seconds", 0) or 0)
+            deadline = time.time() + wait_seconds
+            emit(args, f"请在浏览器中完成登录，工具将在 {int(wait_seconds)} 秒后自动保存凭证。")
+            while time.time() < deadline:
+                check_stopped(args)
+                time.sleep(1)
         else:
             input("After login is complete and the ZSXQ page is visible, press Enter...")
         check_stopped(args)
@@ -1786,10 +1793,12 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
 def run_gui() -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext, ttk
+    from gui_utils import create_scrollable_body
 
     root = tk.Tk()
     root.title("知识星球导出工具")
     root.geometry("1080x840")
+    body = create_scrollable_body(root)
 
     entry_var = tk.StringVar(value=DEFAULT_ENTRY_URL)
     output_var = tk.StringVar(value=str((PROJECT_DIR / "exports" / "zsxq").resolve()))
@@ -2118,7 +2127,7 @@ def run_gui() -> int:
             return
         run_worker("全量覆盖导出", args, lambda: export_entry(args))
 
-    form = tk.Frame(root, padx=14, pady=12)
+    form = tk.Frame(body, padx=14, pady=12)
     form.pack(fill="x")
     form.columnconfigure(1, weight=1)
 
@@ -2153,7 +2162,7 @@ def run_gui() -> int:
     tk.Checkbutton(form, text="同时导出评论区", variable=include_comments_var).grid(row=16, column=1, sticky="w", pady=5)
     tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=17, column=1, sticky="w", pady=5)
 
-    actions = tk.Frame(root, padx=14, pady=4)
+    actions = tk.Frame(body, padx=14, pady=4)
     actions.pack(fill="x")
     buttons.extend(
         [
@@ -2169,7 +2178,7 @@ def run_gui() -> int:
     for button in buttons:
         button.pack(side="left", padx=5, pady=6)
 
-    toc_frame = tk.LabelFrame(root, text="目录选择", padx=10, pady=8)
+    toc_frame = tk.LabelFrame(body, text="目录选择", padx=10, pady=8)
     toc_frame.pack(fill="both", expand=False, padx=14, pady=8)
     toc_header = tk.Frame(toc_frame)
     toc_header.pack(fill="x")
@@ -2189,14 +2198,14 @@ def run_gui() -> int:
     toc_tree.bind("<space>", toggle_toc_selection)
 
     note = tk.Label(
-        root,
+        body,
         text="说明：先读取目录可选择导出范围；未读取目录时默认导出全部可识别内容。勾选评论区会额外滚动并展开页面可见评论；遇到 429 会暂停重试。",
         anchor="w",
         padx=14,
     )
     note.pack(fill="x")
 
-    log_text = scrolledtext.ScrolledText(root, height=12, state="disabled")
+    log_text = scrolledtext.ScrolledText(body, height=12, state="disabled")
     log_text.pack(fill="both", expand=True, padx=14, pady=12)
     poll_log()
     root.mainloop()
@@ -2207,6 +2216,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export ZSXQ column/topic/article pages to Markdown.")
     parser.add_argument("--gui", action="store_true", help="Open the graphical interface")
     parser.add_argument("--login", action="store_true", help="Open browser, let you log in, then save auth cookies")
+    parser.add_argument("--login-wait-seconds", type=float, default=0.0, help="For non-interactive GUI wrappers, wait this many seconds before saving login cookies")
     parser.add_argument("--scan-toc", action="store_true", help="Read the left ZSXQ directory and print it as JSON, without exporting")
     parser.add_argument("--entry-url", help="ZSXQ column/topic/article URL")
     parser.add_argument("--output", help="Output directory")
