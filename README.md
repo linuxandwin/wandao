@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#系统要求)
 [![GitHub](https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black)](https://github.com/tllovesxs/wandao)
 
-万能导希望解决一个很朴素的问题：知识不应该被平台格式、复制粘贴和目录迁移卡住。你可以把自己有权限访问的项目教学资料、团队知识库、课程文档转换为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台里，尽量保留目录层级和正文图片。
+万能导希望解决一个很朴素的问题：知识不应该被平台格式、复制粘贴和目录迁移卡住。你可以把自己有权限访问的项目教学资料、团队知识库、课程文档转换为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台里，并保留目录层级和正文图片以及格式。
 
 导出的文档可以和源码项目放在一起，再交给 AI 阅读，让 AI 同时理解“教学文档 + 真实代码 + 项目结构”。这样学习大型项目时，资料不再散落在多个页面里，提问也不再只是孤立地复制一小段内容。
 
@@ -54,7 +54,7 @@ Author: `tllovesxs`
 - 支持语雀任意知识库导出为 Markdown。
 - 支持飞书任意 Wiki 知识库导出为 Markdown。
 - 支持阿里云 Thoughts 任意工作区导出为 Markdown。
-- 支持本地 Markdown 批量导入飞书 Wiki，并尽量恢复多层目录结构。
+- 支持本地 Markdown 批量导入飞书 Wiki，并恢复多层目录结构。(全网首发)
 
 工具会使用本机 Chrome/Edge 的调试协议打开页面。登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。
 
