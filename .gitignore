@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+.venv/
 
 # Local browser/session state
 .aliyun-thoughts-chrome-profile/

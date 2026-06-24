@@ -35,6 +35,13 @@ const TOOLS = {
     script: 'export_aliyun_thoughts.py',
     urlParam: '--workspace-url',
     outputParam: '--output'
+  },
+  'yinxiang': {
+    title: '印象笔记导出',
+    description: '将印象笔记笔记本导出为 Markdown',
+    script: 'export_yinxiang.py',
+    outputParam: '--output',
+    noUrl: true
   }
 };
 
@@ -245,7 +252,8 @@ function initializeToolHandlers(toolId) {
       zsxq: 'exports/zsxq',
       yuque: 'exports/yuque',
       'feishu-export': 'exports/feishu',
-      aliyun: 'exports/aliyun-thoughts'
+      aliyun: 'exports/aliyun-thoughts',
+      yinxiang: 'exports/yinxiang'
     };
     const suffix = defaults[toolId];
     if (suffix && appPaths?.projectRoot) {
@@ -270,7 +278,13 @@ function initializeToolHandlers(toolId) {
   // Login button
   const loginBtn = document.getElementById(`${prefix}-login`);
   if (loginBtn) {
-    loginBtn.addEventListener('click', () => handleLogin(toolId));
+    loginBtn.addEventListener('click', () => {
+      if (toolId === 'yinxiang') {
+        handleYinxiangLogin();
+      } else {
+        handleLogin(toolId);
+      }
+    });
   }
 
   const loginDoneBtn = document.getElementById(`${prefix}-login-done`);
@@ -343,6 +357,40 @@ async function handleLogin(toolId) {
   } finally {
     setLoginDoneButton(toolId, false);
     setRunning(false, toolId);
+  }
+}
+
+async function handleYinxiangLogin() {
+  const config = TOOLS.yinxiang;
+  const username = document.getElementById('yinxiang-username')?.value.trim();
+  const password = document.getElementById('yinxiang-password')?.value || '';
+  if (!username || !password) {
+    alert('请先填写印象笔记账号和密码。');
+    return;
+  }
+
+  const args = ['--init-auth', '--username', username, '--password-stdin'];
+  setRunning(true, 'yinxiang');
+  startProgress(`登录并同步：${config.title}`, '正在初始化本地同步库并同步笔记...');
+  log(`开始登录并同步：${config.title}`, 'info');
+
+  try {
+    const result = await window.electronAPI.runPythonCommand(config.script, args, {
+      stdinText: `${password}\n`
+    });
+    if (result.success) {
+      log('印象笔记凭证保存并同步完成', 'success');
+      if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+      finishProgress(true, '印象笔记已同步，可以读取目录');
+    } else {
+      log(`登录同步失败：${result.error}`, 'error');
+      finishProgress(false, '登录同步失败，请查看运行日志');
+    }
+  } catch (error) {
+    log(`错误：${formatError(error)}`, 'error');
+    finishProgress(false, '登录同步出错，请查看运行日志');
+  } finally {
+    setRunning(false, 'yinxiang');
   }
 }
 
@@ -446,11 +494,11 @@ function buildExportArgs(toolId, options = {}) {
   const url = document.getElementById(`${prefix}-url`)?.value.trim();
   const output = document.getElementById(`${prefix}-output`)?.value.trim();
 
-  if (!url) {
+  if (!config.noUrl && !url) {
     throw new Error('请先填写 URL');
   }
 
-  const args = [config.urlParam, url];
+  const args = config.noUrl ? [] : [config.urlParam, url];
   if (forScan) {
     args.push('--scan-toc');
   } else if (output) {
@@ -560,6 +608,44 @@ function normalizeTocNodes(toolId, data) {
         title: item.title || '未命名',
         parentNodeId: item.parent_id ? `aliyun:${item.parent_id}` : '',
         selectable: item.type === 'document'
+      });
+    });
+  }
+  if (toolId === 'yinxiang') {
+    (data.notebooks || []).forEach((notebook, notebookIndex) => {
+      const stack = String(notebook.stack || '');
+      let parentNodeId = '';
+      if (stack) {
+        parentNodeId = `yinxiang-stack:${stack}`;
+        if (!nodes.some((node) => node.nodeId === parentNodeId)) {
+          nodes.push({
+            nodeId: parentNodeId,
+            exportId: '',
+            title: stack,
+            parentNodeId: '',
+            selectable: false
+          });
+        }
+      }
+      const notebookId = String(notebook.guid || `notebook-${notebookIndex}`);
+      const notebookNodeId = `yinxiang-notebook:${notebookId}`;
+      nodes.push({
+        nodeId: notebookNodeId,
+        exportId: '',
+        title: notebook.name || `笔记本 ${notebookIndex + 1}`,
+        parentNodeId,
+        selectable: false
+      });
+      (notebook.notes || []).forEach((note, noteIndex) => {
+        const guid = String(note.guid || '');
+        if (!guid) return;
+        nodes.push({
+          nodeId: `yinxiang-note:${guid}`,
+          exportId: guid,
+          title: note.title || `未命名笔记 ${noteIndex + 1}`,
+          parentNodeId: notebookNodeId,
+          selectable: true
+        });
       });
     });
   }

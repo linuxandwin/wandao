@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFile: (options) => ipcRenderer.invoke('save-file', options),
 
   // Python 命令执行
-  runPythonCommand: (command, args) => ipcRenderer.invoke('run-python-command', command, args),
+  runPythonCommand: (command, args, options) => ipcRenderer.invoke('run-python-command', command, args, options),
   stopPythonProcess: () => ipcRenderer.invoke('stop-python-process'),
   sendPythonInput: (text) => ipcRenderer.invoke('send-python-input', text),
 

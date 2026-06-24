@@ -41,6 +41,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "url_arg": "--workspace-url",
         "url_hint": "https://thoughts.aliyun.com/workspaces/<id>/overview",
     },
+    "yinxiang": {
+        "label": "印象笔记任意笔记本",
+        "script": "export_yinxiang.py",
+        "url_arg": "无需 URL",
+        "url_hint": "首次登录并同步后，可读取本地目录并勾选导出",
+    },
 }
 
 

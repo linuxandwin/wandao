@@ -35,6 +35,7 @@ Author: `tllovesxs`
 | 增量更新 | 已导出的文档会跳过，缺失或需要深入的链接可以继续补齐 |
 | Markdown 中转 | 按目录结构保存为 Markdown，并生成入口索引和处理报告 |
 | 文档导入 | 支持将本地 Markdown 批量导入飞书 Wiki，并恢复多层文件夹结构 |
+| 印象笔记导出 | 支持印象笔记同步到本地后按笔记本目录导出 Markdown |
 | 评论区可选 | 知识星球导出可选择是否同时保存页面可见评论区内容 |
 | 图片本地化 | 尽量下载正文图片到本地 `assets/` 目录，减少后续失效风险 |
 | 浏览器自动查找 | 自动扫描 Chrome、Edge、Chromium，也支持用户手动指定浏览器 |
@@ -55,9 +56,10 @@ Author: `tllovesxs`
 - 支持语雀任意知识库导出为 Markdown。
 - 支持飞书任意 Wiki 知识库导出为 Markdown。
 - 支持阿里云 Thoughts 任意工作区导出为 Markdown。
+- 支持印象笔记任意笔记本导出为 Markdown。
 - 支持本地 Markdown 批量导入飞书 Wiki，并恢复多层目录结构。(全网首发)
 
-工具会使用本机 Chrome/Edge 的调试协议打开页面。登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。
+浏览器类平台会使用本机 Chrome/Edge 的调试协议打开页面，登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。印象笔记会保存本机同步凭证，同样不保存明文密码。
 
 ## 系统要求
 
@@ -96,7 +98,9 @@ Windows PowerShell：
 ```powershell
 git clone https://github.com/tllovesxs/wandao.git
 cd wandao
-pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
 cd wandao_electron
 npm install
 npm start
@@ -107,6 +111,8 @@ macOS/Linux：
 ```bash
 git clone https://github.com/tllovesxs/wandao.git
 cd wandao
+python3 -m venv .venv
+source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 cd wandao_electron
 npm install
@@ -132,7 +138,9 @@ npm run build:mac
 ```powershell
 git clone https://github.com/tllovesxs/wandao.git
 cd wandao
-pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
 python wandao.py
 ```
 
@@ -155,6 +163,8 @@ python wandao.py --list
 5. 点击“开始导出”。如果勾选了“增量导出”，工具只补本地缺失内容；取消勾选则会重新导出选中内容。
 
 未读取目录时，默认导出该入口下可识别的全部内容。
+
+印象笔记导出不需要入口 URL。第一次使用时，在左侧选择“印象笔记导出”，填写账号和密码后点击“登录并同步”。工具会把同步凭证保存在本机同步库里，不会保存明文密码。同步完成后点击“读取目录”，再勾选笔记本或笔记并导出。
 
 ### 飞书 Markdown 导入全流程
 
@@ -188,6 +198,7 @@ exports/
   yuque/
   feishu/
   aliyun-thoughts/
+  yinxiang/
 ```
 
 每次导出通常会生成：
@@ -208,6 +219,7 @@ python wandao.py --provider zsxq --gui
 python wandao.py --provider yuque --gui
 python wandao.py --provider feishu --gui
 python wandao.py --provider aliyun-thoughts --gui
+python wandao.py --provider yinxiang --gui
 ```
 
 知识星球任意项目：
@@ -232,6 +244,19 @@ python wandao.py --provider feishu -- --wiki-url "https://<tenant>.feishu.cn/wik
 
 ```powershell
 python wandao.py --provider aliyun-thoughts -- --workspace-url "https://thoughts.aliyun.com/workspaces/<id>/overview" --output "./exports/aliyun-thoughts" --incremental
+```
+
+印象笔记任意笔记本：
+
+```powershell
+# 第一次使用：初始化本地同步库。密码会从标准输入读取，不会放进命令行参数。
+python export_yinxiang.py --init-auth --username "你的印象笔记账号" --password-stdin
+
+# 读取目录
+python export_yinxiang.py --scan-toc
+
+# 导出全部
+python wandao.py --provider yinxiang -- --output "./exports/yinxiang" --incremental
 ```
 
 浏览器安装在非常规位置时：
@@ -307,6 +332,7 @@ wandao/
 ├── export_yuque.py                   # 语雀导出器
 ├── export_feishu.py                  # 飞书导出器
 ├── export_aliyun_thoughts.py         # 阿里云 Thoughts 导出器
+├── export_yinxiang.py                # 印象笔记导出器
 ├── import_feishu.py                  # 本地 Markdown 导入飞书 Wiki
 ├── wandao_electron/                  # 统一 Electron 桌面端
 ├── prompts/项目学习导师提示词.md      # 项目学习提示词

@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -58,8 +58,16 @@
         "to": "python/export_aliyun_thoughts.py"
       },
       {
+        "from": "../export_yinxiang.py",
+        "to": "python/export_yinxiang.py"
+      },
+      {
         "from": "../gui_utils.py",
         "to": "python/gui_utils.py"
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "python/requirements.txt"
       }
     ],
     "win": {
@@ -67,7 +75,8 @@
         "nsis",
         "portable"
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,

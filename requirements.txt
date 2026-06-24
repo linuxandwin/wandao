@@ -1,2 +1,2 @@
 # Python 3.10+ is recommended.
-# Runtime currently uses the Python standard library only.
+evernote-backup==1.13.1

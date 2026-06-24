@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 知识星球、语雀、飞书 Wiki、阿里云 Thoughts 导出为 Markdown。
+- 知识星球、语雀、飞书 Wiki、阿里云 Thoughts、印象笔记导出为 Markdown。
 - 本地 Markdown 批量导入飞书 Wiki。
 - 支持登录凭证保存、目录读取、勾选导出、增量导出、停止任务和全局进度条。
 - 调用项目根目录下的 Python 脚本执行实际导出/导入逻辑。

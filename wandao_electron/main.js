@@ -34,6 +34,7 @@ const ALLOWED_SCRIPTS = new Set([
   'export_yuque.py',
   'export_feishu.py',
   'export_aliyun_thoughts.py',
+  'export_yinxiang.py',
   'import_feishu.py'
 ]);
 
@@ -269,7 +270,7 @@ ipcMain.handle('save-file', async (event, options) => {
   return result.canceled ? null : result.filePath;
 });
 
-ipcMain.handle('run-python-command', async (event, scriptName, args) => {
+ipcMain.handle('run-python-command', async (event, scriptName, args, options = {}) => {
   return new Promise((resolve, reject) => {
     let scriptPath;
     try {
@@ -285,6 +286,11 @@ ipcMain.handle('run-python-command', async (event, scriptName, args) => {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
     });
+
+    if (options?.stdinText) {
+      proc.stdin.write(String(options.stdinText));
+      proc.stdin.end();
+    }
 
     let stdout = '';
     let stderr = '';

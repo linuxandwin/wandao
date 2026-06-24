@@ -19,6 +19,7 @@
         <button class="nav-item" data-tool="yuque">语雀导出</button>
         <button class="nav-item" data-tool="feishu-export">飞书导出</button>
         <button class="nav-item" data-tool="aliyun">阿里 Thoughts 导出</button>
+        <button class="nav-item" data-tool="yinxiang">印象笔记导出</button>
         <button class="nav-item" data-tool="feishu-import">飞书 Markdown 导入</button>
       </aside>
 
@@ -236,6 +237,46 @@
         <button class="btn-primary" id="aliyun-export">开始导出</button>
         <button class="btn-danger" id="aliyun-stop" disabled>停止</button>
         <button class="btn-secondary" id="aliyun-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-yinxiang">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="yinxiang-username">印象笔记账号 <span class="required">*</span></label>
+            <input type="text" id="yinxiang-username" placeholder="手机号 / 邮箱 / 用户名">
+          </div>
+          <div class="form-group flex-1">
+            <label for="yinxiang-password">印象笔记密码 <span class="required">*</span></label>
+            <input type="password" id="yinxiang-password" placeholder="仅用于本地初始化凭证">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="yinxiang-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="yinxiang-output" placeholder="留空使用默认 exports/yinxiang">
+            <button class="btn-secondary" id="yinxiang-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <label class="checkbox-label">
+              <input type="checkbox" id="yinxiang-incremental" checked>
+              <span>增量导出</span>
+            </label>
+            <p class="helper-note">首次点击“登录并同步”会把印象笔记同步到本地，之后可读取目录并选择要导出的笔记。</p>
+          </div>
+        </details>
+      </section>
+      <section class="action-section">
+        <button class="btn-primary" id="yinxiang-login">登录并同步</button>
+        <button class="btn-primary" id="yinxiang-export">开始导出</button>
+        <button class="btn-danger" id="yinxiang-stop" disabled>停止</button>
+        <button class="btn-secondary" id="yinxiang-open-dir">打开目录</button>
       </section>
     </div>
   </template>
