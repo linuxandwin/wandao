@@ -29,6 +29,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "url_arg": "--book-url",
         "url_hint": "https://www.yuque.com/<namespace>/<book>",
     },
+    "yuque-import": {
+        "label": "语雀 Markdown 导入",
+        "script": "import_yuque.py",
+        "url_arg": "--target-book-url",
+        "url_hint": "https://www.yuque.com/<namespace>/<book>",
+    },
     "feishu": {
         "label": "飞书任意 Wiki 知识库",
         "script": "export_feishu.py",
@@ -70,7 +76,7 @@ def run_launcher_gui() -> int:
     provider_keys = list(PROVIDERS)
     provider_var = tk.StringVar(value=provider_keys[0])
 
-    tk.Label(body, text="选择要导出的知识库类型", anchor="w").pack(fill="x", padx=18, pady=(18, 6))
+    tk.Label(body, text="选择要使用的知识库工具", anchor="w").pack(fill="x", padx=18, pady=(18, 6))
     selector = ttk.Combobox(
         body,
         textvariable=provider_var,
@@ -87,8 +93,8 @@ def run_launcher_gui() -> int:
         hint_var.set(
             f"入口参数：{config['url_arg']}\n"
             f"URL 示例：{config['url_hint']}\n\n"
-            "点击下方按钮后，会打开对应平台的导出界面。先登录并保存凭证，"
-            "再读取目录、勾选范围并导出。"
+            "点击下方按钮后，会打开对应平台的工具界面。导出工具通常先登录并保存凭证，"
+            "再读取目录、勾选范围并导出；导入工具按界面提示填写目标平台配置。"
         )
 
     provider_var.trace_add("write", sync_hint)
@@ -114,7 +120,7 @@ def run_launcher_gui() -> int:
 
     actions = tk.Frame(body)
     actions.pack(fill="x", padx=18, pady=8)
-    tk.Button(actions, text="打开导出界面", command=open_provider_gui, width=18).pack(side="left", padx=(0, 10))
+    tk.Button(actions, text="打开工具界面", command=open_provider_gui, width=18).pack(side="left", padx=(0, 10))
     tk.Button(actions, text="打开项目目录", command=open_project_dir, width=14).pack(side="left")
     tk.Button(actions, text="退出", command=root.destroy, width=10).pack(side="right")
 

@@ -54,6 +54,10 @@
         "to": "python/export_yuque.py"
       },
       {
+        "from": "../import_yuque.py",
+        "to": "python/import_yuque.py"
+      },
+      {
         "from": "../export_aliyun_thoughts.py",
         "to": "python/export_aliyun_thoughts.py"
       },

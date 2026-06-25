@@ -164,6 +164,10 @@ body {
   min-width: 0;
 }
 
+.align-end {
+  align-self: flex-end;
+}
+
 .checkbox-label {
   display: inline-flex;
   align-items: center;

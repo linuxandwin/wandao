@@ -35,9 +35,10 @@ Author: `tllovesxs`
 | 增量更新 | 已导出的文档会跳过，缺失或需要深入的链接可以继续补齐 |
 | Markdown 中转 | 按目录结构保存为 Markdown，并生成入口索引和处理报告 |
 | 文档导入 | 支持将本地 Markdown 批量导入飞书 Wiki，并恢复多层文件夹结构 |
+| 语雀导入 | 支持将本地 Markdown 创建/更新到语雀知识库，并生成导入索引 |
 | 印象笔记导出 | 支持印象笔记同步到本地后按笔记本目录导出 Markdown |
 | 评论区可选 | 知识星球导出可选择是否同时保存页面可见评论区内容 |
-| 图片本地化 | 尽量下载正文图片到本地 `assets/` 目录，减少后续失效风险 |
+| 图片与附件本地化 | 尽量下载正文图片到本地 `assets/`，下载语雀/印象笔记等附件到本地附件目录，减少后续失效风险 |
 | 浏览器自动查找 | 自动扫描 Chrome、Edge、Chromium，也支持用户手动指定浏览器 |
 | 请求节奏控制 | 内置固定延迟和随机浮动，尽量模拟正常阅读和复制粘贴节奏 |
 | 停止按钮 | 导出过程中可以随时停止，已完成的文件会保留 |
@@ -53,7 +54,8 @@ Author: `tllovesxs`
 ## 支持范围
 
 - 支持知识星球任意项目、专栏、帖子和文章页导出为 Markdown。
-- 支持语雀任意知识库导出为 Markdown。
+- 支持语雀任意知识库导出为 Markdown，并尽量本地化正文图片和附件。
+- 支持本地 Markdown 批量导入语雀知识库，并恢复目录层级、图片和附件链接。
 - 支持飞书任意 Wiki 知识库导出为 Markdown。
 - 支持阿里云 Thoughts 任意工作区导出为 Markdown。
 - 支持印象笔记任意笔记本导出为 Markdown。
@@ -166,6 +168,19 @@ python wandao.py --list
 
 印象笔记导出不需要入口 URL。第一次使用时，在左侧选择“印象笔记导出”，填写账号和密码后点击“登录并同步”。工具会把同步凭证保存在本机同步库里，不会保存明文密码。同步完成后点击“读取目录”，再勾选笔记本或笔记并导出。
 
+### 语雀 Markdown 导入
+
+1. 在左侧选择“语雀 Markdown 导入”。
+2. 填写目标语雀知识库 URL。
+3. 点击“登录并保存凭证”，在浏览器里登录语雀并确认能访问目标知识库。
+4. 回到工具点击“我已完成登录，保存凭证”。
+5. 选择本地 Markdown 目录。
+6. 点击“生成计划”，确认即将导入的文档数量、目录层级、图片和附件数量。
+7. 点击“单篇导入测试”，确认标题、正文格式、图片、附件和目录位置正常。
+8. 点击“批量导入”。
+
+语雀导入会按本地文件夹创建语雀目录，使用相对路径的本地图片会上传到语雀并替换为在线图片，普通附件也会上传并替换为语雀附件链接。为了避免同名标题互相覆盖，工具会根据本地相对路径生成稳定 slug；同一批文档再次导入时会更新对应文档。
+
 ### 飞书 Markdown 导入全流程
 
 飞书导入比普通导出多了开放平台配置，建议第一次按下面顺序来，不要跳步：
@@ -206,8 +221,9 @@ exports/
 | 文件或目录 | 说明 |
 |------------|------|
 | `00-知识库入口.md` | 本地目录索引 |
-| `00-导出报告.json` | 导出统计、失败项、图片下载情况 |
+| `00-导出报告.json` | 导出统计、失败项、图片和附件下载情况 |
 | `assets/` | 正文图片资源 |
+| `attachments/` | 附件资源，当前主要用于语雀、印象笔记等带文件附件的平台 |
 | `*.md` | 按目录结构导出的 Markdown 文档 |
 
 ## 命令行示例
@@ -232,6 +248,17 @@ python wandao.py --provider zsxq -- --entry-url "https://wx.zsxq.com/columns/...
 
 ```powershell
 python wandao.py --provider yuque -- --book-url "https://www.yuque.com/<namespace>/<book>" --output "./exports/yuque" --incremental
+```
+
+语雀导出默认会尝试下载图片和附件。如果附件很大，或只想保留远程附件链接，可以追加 `--skip-attachments`。
+
+语雀 Markdown 导入：
+
+```powershell
+python wandao.py --provider yuque-import -- --target-book-url "https://www.yuque.com/<namespace>/<book>" --login
+python wandao.py --provider yuque-import -- --target-book-url "https://www.yuque.com/<namespace>/<book>" --source-dir "./exports/yuque" --plan
+python wandao.py --provider yuque-import -- --target-book-url "https://www.yuque.com/<namespace>/<book>" --source-dir "./exports/yuque" --api-import-one --yes
+python wandao.py --provider yuque-import -- --target-book-url "https://www.yuque.com/<namespace>/<book>" --source-dir "./exports/yuque" --api-import-all --yes
 ```
 
 飞书任意 Wiki：
@@ -333,6 +360,7 @@ wandao/
 ├── export_feishu.py                  # 飞书导出器
 ├── export_aliyun_thoughts.py         # 阿里云 Thoughts 导出器
 ├── export_yinxiang.py                # 印象笔记导出器
+├── import_yuque.py                   # 本地 Markdown 导入语雀
 ├── import_feishu.py                  # 本地 Markdown 导入飞书 Wiki
 ├── wandao_electron/                  # 统一 Electron 桌面端
 ├── prompts/项目学习导师提示词.md      # 项目学习提示词

@@ -14,6 +14,14 @@ const TOOLS = {
     urlParam: '--book-url',
     outputParam: '--output'
   },
+  'yuque-import': {
+    title: '语雀 Markdown 导入',
+    description: '将本地 Markdown 批量导入到语雀知识库',
+    script: 'import_yuque.py',
+    urlParam: '--target-book-url',
+    outputParam: '--source-dir',
+    isImport: true
+  },
   'feishu-export': {
     title: '飞书 Wiki 知识库导出',
     description: '将飞书 Wiki 导出为 Markdown',
@@ -251,6 +259,7 @@ function initializeToolHandlers(toolId) {
     const defaults = {
       zsxq: 'exports/zsxq',
       yuque: 'exports/yuque',
+      'yuque-import': 'exports/yuque',
       'feishu-export': 'exports/feishu',
       aliyun: 'exports/aliyun-thoughts',
       yinxiang: 'exports/yinxiang'
@@ -320,6 +329,10 @@ function initializeToolHandlers(toolId) {
         alert('请先指定输出目录');
       }
     });
+  }
+
+  if (toolId === 'yuque-import') {
+    initializeYuqueImportHandlers();
   }
 }
 
@@ -428,6 +441,84 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function buildYuqueImportArgs(options = {}) {
+  const url = document.getElementById('yuque-import-url')?.value.trim();
+  const sourceDir = document.getElementById('yuque-import-output')?.value.trim();
+  if (!url) throw new Error('请填写目标语雀知识库 URL');
+  if (!sourceDir) throw new Error('请选择 Markdown 目录');
+
+  const args = ['--target-book-url', url, '--source-dir', sourceDir];
+  if (options.saveConfig) {
+    args.push('--save-config');
+    return args;
+  }
+  if (options.plan) {
+    args.push('--plan');
+    return args;
+  }
+  if (options.single) {
+    args.push('--api-import-one', '--max-import', '1', '--yes');
+  } else {
+    args.push('--api-import-all', '--yes');
+  }
+
+  const updateExisting = document.getElementById('yuque-import-update-existing');
+  if (updateExisting && !updateExisting.checked) {
+    args.push('--skip-existing');
+  } else {
+    args.push('--update-existing');
+  }
+  return args;
+}
+
+async function runYuqueImportCommand(args, title, detail = '正在处理语雀导入任务...') {
+  setRunning(true, 'yuque-import');
+  startProgress(title, detail);
+  log(`开始：${title}`, 'info');
+  try {
+    const result = await window.electronAPI.runPythonCommand('import_yuque.py', args);
+    if (result.success) {
+      log(`${title}完成`, 'success');
+      if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+      finishProgress(true, `${title}完成`);
+    } else {
+      log(`${title}失败：${result.error}`, 'error');
+      finishProgress(false, `${title}失败，请查看运行日志`);
+    }
+  } catch (error) {
+    log(`错误：${formatError(error)}`, 'error');
+    finishProgress(false, `${title}出错，请查看运行日志`);
+  } finally {
+    setRunning(false, 'yuque-import');
+  }
+}
+
+function initializeYuqueImportHandlers() {
+  document.getElementById('yuque-import-save-config')?.addEventListener('click', async () => {
+    try {
+      await runYuqueImportCommand(buildYuqueImportArgs({ saveConfig: true }), '保存语雀导入配置', '正在保存本机配置...');
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+
+  document.getElementById('yuque-import-plan')?.addEventListener('click', async () => {
+    try {
+      await runYuqueImportCommand(buildYuqueImportArgs({ plan: true }), '生成语雀导入计划', '正在扫描本地 Markdown 并验证目标知识库...');
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+
+  document.getElementById('yuque-import-one')?.addEventListener('click', async () => {
+    try {
+      await runYuqueImportCommand(buildYuqueImportArgs({ single: true }), '语雀单篇导入测试', '正在导入第一篇 Markdown...');
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+}
+
 function ensureTocSelector(toolId) {
   const config = TOOLS[toolId];
   if (!config || config.isImport) return;
@@ -498,6 +589,10 @@ function buildExportArgs(toolId, options = {}) {
     throw new Error('请先填写 URL');
   }
 
+  if (toolId === 'yuque-import') {
+    return buildYuqueImportArgs(options);
+  }
+
   const args = config.noUrl ? [] : [config.urlParam, url];
   if (forScan) {
     args.push('--scan-toc');
@@ -531,6 +626,13 @@ function buildExportArgs(toolId, options = {}) {
     const includeComments = document.getElementById('zsxq-include-comments');
     if (!forScan && includeComments && includeComments.checked) {
       args.push('--include-comments');
+    }
+  }
+
+  if (toolId === 'yuque') {
+    const downloadAttachments = document.getElementById('yuque-download-attachments');
+    if (!forScan && downloadAttachments && !downloadAttachments.checked) {
+      args.push('--skip-attachments');
     }
   }
 
@@ -809,6 +911,7 @@ async function handleScanToc(toolId) {
 // Handle export
 async function handleExport(toolId) {
   const config = TOOLS[toolId];
+  const actionName = config.isImport ? '导入' : '导出';
   let args;
   try {
     args = buildExportArgs(toolId);
@@ -818,8 +921,8 @@ async function handleExport(toolId) {
   }
 
   setRunning(true, toolId);
-  startProgress(`导出：${config.title}`, '正在准备导出任务...');
-  log(`开始导出：${config.title}`, 'info');
+  startProgress(`${actionName}：${config.title}`, `正在准备${actionName}任务...`);
+  log(`开始${actionName}：${config.title}`, 'info');
   const state = tocStates[toolId];
   if (state?.loaded) {
     log(`本次按目录选择导出：已选择 ${state.selected.size} 篇。`, 'info');
@@ -829,18 +932,18 @@ async function handleExport(toolId) {
   try {
     const result = await window.electronAPI.runPythonCommand(config.script, args);
     if (result.success) {
-      log('导出完成', 'success');
+      log(`${actionName}完成`, 'success');
       if (result.data) {
         log(JSON.stringify(result.data, null, 2), 'success');
       }
-      finishProgress(true, '导出完成');
+      finishProgress(true, `${actionName}完成`);
     } else {
-      log(`导出失败：${result.error}`, 'error');
-      finishProgress(false, '导出失败，请查看运行日志');
+      log(`${actionName}失败：${result.error}`, 'error');
+      finishProgress(false, `${actionName}失败，请查看运行日志`);
     }
   } catch (error) {
     log(`错误：${formatError(error)}`, 'error');
-    finishProgress(false, '导出出错，请查看运行日志');
+    finishProgress(false, `${actionName}出错，请查看运行日志`);
   } finally {
     setRunning(false, toolId);
   }
@@ -870,7 +973,7 @@ function setRunning(running, toolId) {
   if (loginBtn) loginBtn.disabled = running;
   if (scanTocBtn) scanTocBtn.disabled = running;
   if (stopBtn) stopBtn.disabled = !running;
-  ['toc-all', 'toc-none', 'toc-invert', 'open-dir'].forEach((suffix) => {
+  ['toc-all', 'toc-none', 'toc-invert', 'open-dir', 'plan', 'one', 'save-config', 'open-token'].forEach((suffix) => {
     const button = document.getElementById(`${prefix}-${suffix}`);
     if (button) button.disabled = running;
   });

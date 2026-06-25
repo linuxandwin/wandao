@@ -25,7 +25,9 @@ cookies, not passwords. Keep auth files private.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import mimetypes
 import os
 import queue
 import re
@@ -119,7 +121,9 @@ def normalize_book_url(book_url: str) -> str:
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) < 2:
         raise ExportError("语雀知识库 URL 至少需要包含用户/团队路径和知识库 slug")
-    return f"https://www.yuque.com/{parts[0]}/{parts[1]}"
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or "www.yuque.com"
+    return f"{scheme}://{netloc}/{parts[0]}/{parts[1]}"
 
 
 def parse_book_url(book_url: str) -> tuple[str, str, str]:
@@ -128,11 +132,26 @@ def parse_book_url(book_url: str) -> tuple[str, str, str]:
     return parts[0], parts[1], normalized
 
 
-def page_for_book(port: int, namespace: str, book_slug: str) -> dict[str, Any] | None:
+def cookie_domain_matches(cookie_domain: str, host: str | None) -> bool:
+    if not host:
+        return False
+    domain = (cookie_domain or "").lower().lstrip(".")
+    host = host.lower()
+    return bool(domain and (host == domain or host.endswith("." + domain)))
+
+
+def page_for_book(port: int, book_url: str) -> dict[str, Any] | None:
     pages = http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
-    needle = f"yuque.com/{namespace}/{book_slug}"
+    normalized = urllib.parse.urlparse(book_url)
+    expected_host = (normalized.hostname or "").lower()
+    expected_path = normalized.path.rstrip("/")
     for page in pages:
-        if page.get("type") == "page" and needle in page.get("url", ""):
+        if page.get("type") != "page":
+            continue
+        page_url = urllib.parse.urlparse(page.get("url", ""))
+        page_host = (page_url.hostname or "").lower()
+        page_path = page_url.path.rstrip("/")
+        if page_host == expected_host and page_path.startswith(expected_path):
             return page
     return None
 
@@ -149,11 +168,11 @@ def connect_book_browser(
         chrome_proc = start_chrome(args.port, profile, book_url, getattr(args, "browser_path", None))
         wait_for_debug_port(args.port, timeout=30)
 
-    page = page_for_book(args.port, namespace, book_slug)
+    page = page_for_book(args.port, book_url)
     if not page:
         open_tab(args.port, book_url)
         time.sleep(3)
-        page = page_for_book(args.port, namespace, book_slug)
+        page = page_for_book(args.port, book_url)
     if not page:
         raise ExportError("Could not find or create a Yuque book page in Chrome.")
 
@@ -164,18 +183,22 @@ def connect_book_browser(
     return cdp, chrome_proc
 
 
-def is_yuque_cookie(cookie: dict[str, Any]) -> bool:
+def is_yuque_cookie(cookie: dict[str, Any], book_url: str | None = None) -> bool:
     domain = (cookie.get("domain") or "").lower()
-    return any(
+    if any(
         token in domain
         for token in ("yuque.com", "nlark.com", "alipay.com", "alipayobjects.com", "alicdn.com", "aliyuncs.com")
-    )
+    ):
+        return True
+    if book_url:
+        return cookie_domain_matches(domain, urllib.parse.urlparse(book_url).hostname)
+    return False
 
 
 def save_auth_state(cdp: CDPClient, auth_file: Path, book_url: str) -> dict[str, Any]:
     cdp.send("Network.enable")
     cookies = cdp.send("Network.getAllCookies", timeout=20).get("result", {}).get("cookies", [])
-    cookies = [cookie for cookie in cookies if is_yuque_cookie(cookie)]
+    cookies = [cookie for cookie in cookies if is_yuque_cookie(cookie, book_url)]
     if not cookies:
         raise ExportError("No Yuque cookies found. Make sure login is complete in Chrome.")
     payload = {
@@ -229,8 +252,20 @@ def load_book(cdp: CDPClient, book_url: str, args: argparse.Namespace | None = N
 YUQUE_CONVERTER_JS = r"""
 (content, title) => {
   const images = [];
+  const resources = [];
+  const attachmentNames = new Set(["file", "attachment", "localfile", "doc", "docx", "pdf", "excel", "spreadsheet", "ppt", "archive"]);
+  const downloadableExt = /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|csv|txt|md|json|xml|mp[34]|mov|avi|wav|m4a)$/i;
+  function addResource(url, kind, title, cardName) {
+    if (!url) return;
+    const resource = { url, kind: kind || "image", title: title || "", cardName: cardName || "" };
+    resources.push(resource);
+    if (resource.kind === "image") images.push(url);
+  }
   function text(s) {
     return (s || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  function resourceTitle(data, fallback) {
+    return data.filename || data.file_name || data.name || data.title || fallback || "附件";
   }
   function decodeCard(value) {
     try {
@@ -240,6 +275,12 @@ YUQUE_CONVERTER_JS = r"""
       return {};
     }
   }
+  function looksLikeAttachment(name, data, url) {
+    const key = String(name || "").toLowerCase();
+    if (attachmentNames.has(key)) return true;
+    if (data && (data.size || data.fileSize || data.file_size || data.filename || data.file_name)) return true;
+    return downloadableExt.test(String(url || ""));
+  }
   function inline(node) {
     if (node.nodeType === 3) return node.nodeValue.replace(/\s+/g, " ");
     if (node.nodeType !== 1) return "";
@@ -248,14 +289,14 @@ YUQUE_CONVERTER_JS = r"""
     if (tag === "img") {
       const src = node.getAttribute("src") || node.getAttribute("data-src") || "";
       const alt = node.getAttribute("alt") || "";
-      if (src) images.push(src);
+      if (src) addResource(src, "image", alt || "image", "img");
       return src ? "![" + alt + "](" + src + ")" : "";
     }
     if (tag === "card" || tag === "lake-card") {
       const name = node.getAttribute("name") || node.getAttribute("type") || "card";
       const data = decodeCard(node.getAttribute("value") || node.getAttribute("data-card-value") || "");
       if (name === "image" && data.src) {
-        images.push(data.src);
+        addResource(data.src, "image", data.title || data.name || "image", name);
         return "![" + (data.title || data.name || "image") + "](" + data.src + ")";
       }
       if (name === "math" && data.code) return "$" + String(data.code).replace(/\n/g, " ") + "$";
@@ -267,8 +308,11 @@ YUQUE_CONVERTER_JS = r"""
         return "\n```" + lang + "\n" + data.code + "\n```\n";
       }
       if (data.url) {
-        images.push(data.url);
-        return "[" + name + "](" + data.url + ")";
+        const title = resourceTitle(data, name);
+        if (looksLikeAttachment(name, data, data.url)) {
+          addResource(data.url, "attachment", title, name);
+        }
+        return "[" + title + "](" + data.url + ")";
       }
       return "[" + name + "]";
     }
@@ -278,6 +322,7 @@ YUQUE_CONVERTER_JS = r"""
     if (tag === "code") return "`" + inner.replace(/`/g, "\\`") + "`";
     if (tag === "a") {
       const href = node.getAttribute("href") || "";
+      if (href && downloadableExt.test(href)) addResource(href, "attachment", inner.trim(), "link");
       return href && inner.trim() ? "[" + inner.trim() + "](" + href + ")" : inner;
     }
     return inner;
@@ -315,7 +360,7 @@ YUQUE_CONVERTER_JS = r"""
   const doc = document.implementation.createHTMLDocument("yuque");
   doc.body.innerHTML = content || "";
   const md = [...doc.body.children].map(block).join("").replace(/\n{3,}/g, "\n\n").trim();
-  return { markdown: "# " + title + "\n\n" + md + "\n", images };
+  return { markdown: "# " + title + "\n\n" + md + "\n", images, resources };
 }
 """
 
@@ -345,13 +390,17 @@ def fetch_doc_markdown(
     return value
 
 
-def guess_extension(url: str, content_type: str | None) -> str:
+def guess_extension(url: str, content_type: str | None, fallback: str = "bin") -> str:
     path = urllib.parse.urlparse(url).path.lower()
-    match = re.search(r"\.([a-z0-9]{2,5})$", path)
+    match = re.search(r"\.([a-z0-9]{2,8})$", path)
     if match:
         ext = match.group(1)
         return "jpg" if ext == "jpeg" else ext
-    content_type = content_type or ""
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    guessed = mimetypes.guess_extension(content_type) if content_type else None
+    if guessed:
+        ext = guessed.lstrip(".")
+        return "jpg" if ext in ("jpeg", "jpe") else ext
     if "svg" in content_type:
         return "svg"
     if "png" in content_type:
@@ -362,43 +411,148 @@ def guess_extension(url: str, content_type: str | None) -> str:
         return "gif"
     if "webp" in content_type:
         return "webp"
-    return "png"
+    if "pdf" in content_type:
+        return "pdf"
+    if "zip" in content_type:
+        return "zip"
+    return fallback
 
 
-def download_image(url: str, dest_dir: Path, timeout: int) -> Path:
-    import hashlib
+def cookies_for_url(cookies: list[dict[str, Any]], url: str) -> str:
+    host = urllib.parse.urlparse(url).hostname
+    pairs: list[str] = []
+    for cookie in cookies:
+        name = cookie.get("name")
+        value = cookie.get("value")
+        if not name or value is None:
+            continue
+        domain = cookie.get("domain") or ""
+        if domain and not cookie_domain_matches(domain, host):
+            continue
+        pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
 
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+def read_auth_cookies(auth_file: Path | None) -> list[dict[str, Any]]:
+    if not auth_file or not auth_file.exists():
+        return []
+    try:
+        payload = json.loads(auth_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    cookies = payload.get("cookies") or []
+    return cookies if isinstance(cookies, list) else []
+
+
+def filename_from_content_disposition(value: str | None) -> str:
+    if not value:
+        return ""
+    match = re.search(r"filename\*\s*=\s*UTF-8''([^;]+)", value, re.I)
+    if match:
+        return urllib.parse.unquote(match.group(1).strip().strip('"'))
+    match = re.search(r'filename\s*=\s*"([^"]+)"', value, re.I)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"filename\s*=\s*([^;]+)", value, re.I)
+    return match.group(1).strip().strip('"') if match else ""
+
+
+def safe_resource_filename(url: str, content_type: str | None, title: str | None, content_disposition: str | None) -> str:
+    raw_name = filename_from_content_disposition(content_disposition)
+    if not raw_name:
+        raw_name = urllib.parse.unquote(Path(urllib.parse.urlparse(url).path).name)
+    if not raw_name:
+        raw_name = title or "resource"
+    raw_name = raw_name.split("?")[0].split("#")[0].strip() or "resource"
+    ext = Path(raw_name).suffix.lstrip(".")
+    if not ext:
+        ext = guess_extension(url, content_type, "bin")
+        raw_name = f"{raw_name}.{ext}"
+    safe = sanitize_filename(raw_name)
+    return f"{hashlib.sha1(url.encode('utf-8')).hexdigest()[:8]}-{safe}"
+
+
+def download_resource(
+    url: str,
+    dest_dir: Path,
+    timeout: int,
+    cookies: list[dict[str, Any]],
+    title: str | None = None,
+    referer: str | None = None,
+) -> Path:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    cookie_header = cookies_for_url(cookies, url)
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if referer:
+        headers["Referer"] = referer
+
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read()
-        ext = guess_extension(url, response.headers.get("Content-Type"))
+        content_type = response.headers.get("Content-Type")
+        filename = safe_resource_filename(url, content_type, title, response.headers.get("Content-Disposition"))
     dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / (hashlib.sha1(url.encode("utf-8")).hexdigest()[:12] + "." + ext)
+    target = dest_dir / filename
     if not target.exists():
         target.write_bytes(data)
     return target
 
 
-def localize_images(
+def normalize_resources(resources: list[dict[str, Any]] | list[str], images: list[str] | None = None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in resources or []:
+        if isinstance(item, str):
+            resource = {"url": item, "kind": "image", "title": "image"}
+        elif isinstance(item, dict):
+            resource = {
+                "url": str(item.get("url") or ""),
+                "kind": str(item.get("kind") or "image"),
+                "title": str(item.get("title") or item.get("cardName") or ""),
+            }
+        else:
+            continue
+        url = resource["url"]
+        if not url.startswith(("http://", "https://")):
+            continue
+        key = (url, resource["kind"])
+        if key not in seen:
+            seen.add(key)
+            normalized.append(resource)
+    for url in images or []:
+        if isinstance(url, str) and url.startswith(("http://", "https://")) and (url, "image") not in seen:
+            seen.add((url, "image"))
+            normalized.append({"url": url, "kind": "image", "title": "image"})
+    return normalized
+
+
+def localize_resources(
     markdown: str,
-    images: list[str],
+    resources: list[dict[str, Any]],
     md_path: Path,
     timeout: int,
     keep_remote: bool,
+    cookies: list[dict[str, Any]],
+    download_attachments: bool,
+    referer: str | None = None,
     args: argparse.Namespace | None = None,
-) -> tuple[str, int, list[dict[str, str]]]:
-    success = 0
+) -> tuple[str, dict[str, int], list[dict[str, str]]]:
+    success = {"image": 0, "attachment": 0}
     failures: list[dict[str, str]] = []
-    for url in sorted(set(images)):
+    for resource in resources:
         check_stopped(args)
-        if not url.startswith(("http://", "https://")):
+        url = resource.get("url") or ""
+        kind = "attachment" if resource.get("kind") == "attachment" else "image"
+        if kind == "attachment" and not download_attachments:
             continue
+        target_dir = md_path.parent / ("attachments" if kind == "attachment" else "assets")
         try:
-            target = download_image(url, md_path.parent / "assets", timeout)
+            target = download_resource(url, target_dir, timeout, cookies, resource.get("title") or kind, referer)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
-            success += 1
+            success[kind] += 1
         except Exception as exc:
-            failures.append({"url": url, "error": str(exc)})
+            failures.append({"url": url, "kind": kind, "title": resource.get("title") or "", "error": str(exc)})
             if not keep_remote:
                 markdown = markdown.replace(url, "")
     return markdown, success, failures
@@ -408,7 +562,11 @@ def node_has_children(toc: list[dict[str, Any]], uuid: str) -> bool:
     return any(item.get("parent_uuid") == uuid for item in toc)
 
 
-def build_doc_paths(toc: list[dict[str, Any]], output: Path) -> tuple[dict[str, Path], dict[str, Path]]:
+def build_doc_paths(
+    toc: list[dict[str, Any]],
+    output: Path,
+    selected_doc_ids: set[str] | None = None,
+) -> tuple[dict[str, Path], dict[str, Path]]:
     children: dict[str, list[dict[str, Any]]] = {}
     by_uuid: dict[str, dict[str, Any]] = {}
     index_in_parent: dict[str, int] = {}
@@ -418,6 +576,20 @@ def build_doc_paths(toc: list[dict[str, Any]], output: Path) -> tuple[dict[str, 
     for siblings in children.values():
         for index, item in enumerate(siblings, start=1):
             index_in_parent[item["uuid"]] = index
+
+    included_container_uuids: set[str] | None = None
+    if selected_doc_ids:
+        included_container_uuids = set()
+        for item in toc:
+            if item.get("type") != "DOC":
+                continue
+            key = str(item.get("doc_id") or item["uuid"])
+            if key not in selected_doc_ids:
+                continue
+            parent_uuid = item.get("parent_uuid") or "ROOT"
+            while parent_uuid and parent_uuid != "ROOT":
+                included_container_uuids.add(str(parent_uuid))
+                parent_uuid = by_uuid.get(str(parent_uuid), {}).get("parent_uuid") or "ROOT"
 
     containers: dict[str, Path] = {"ROOT": output}
 
@@ -432,14 +604,19 @@ def build_doc_paths(toc: list[dict[str, Any]], output: Path) -> tuple[dict[str, 
         return directory
 
     for item in toc:
+        if included_container_uuids is not None and str(item["uuid"]) not in included_container_uuids:
+            continue
         if item.get("type") == "TITLE" or node_has_children(toc, item["uuid"]):
             ensure_container(item["uuid"])
 
     doc_paths: dict[str, Path] = {}
     for fallback_index, item in enumerate([x for x in toc if x.get("type") == "DOC"], start=1):
+        key = str(item.get("doc_id") or item["uuid"])
+        if selected_doc_ids and key not in selected_doc_ids:
+            continue
         parent_dir = ensure_container(item.get("parent_uuid") or "ROOT")
         index = index_in_parent.get(item["uuid"], fallback_index)
-        doc_paths[str(item.get("doc_id") or item["uuid"])] = parent_dir / f"{pad(index)}-{sanitize_filename(item.get('title') or '未命名')}.md"
+        doc_paths[key] = parent_dir / f"{pad(index)}-{sanitize_filename(item.get('title') or '未命名')}.md"
     return doc_paths, containers
 
 
@@ -509,6 +686,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
     cdp, chrome_proc = connect_book_browser(args, book_url, namespace, book_slug)
     try:
         auth_file = auth_path_from_args(args)
+        auth_cookies = read_auth_cookies(auth_file) if auth_file.exists() else []
         if auth_file.exists() and not args.skip_auth_load:
             cookie_count = load_auth_state(cdp, auth_file)
             emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
@@ -528,7 +706,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             for item in toc
             if item.get("type") == "DOC" and (not selected_doc_ids or str(item.get("doc_id") or item["uuid"]) in selected_doc_ids)
         ]
-        doc_paths, _ = build_doc_paths(toc, output)
+        doc_paths, _ = build_doc_paths(toc, output, selected_doc_ids or None)
         existing = scan_exported_docs(output)
         for doc_id, old_path in existing.items():
             doc_paths[doc_id] = old_path
@@ -536,8 +714,9 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         exported = 0
         skipped = 0
         image_success = 0
+        attachment_success = 0
         failures: list[dict[str, str]] = []
-        image_failures: list[dict[str, Any]] = []
+        resource_failures: list[dict[str, Any]] = []
         stopped = False
 
         for index, doc in enumerate(docs, start=1):
@@ -553,21 +732,27 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 result = fetch_doc_markdown(cdp, int(book["id"]), doc, args)
                 markdown = result.get("markdown") or f"# {doc.get('title') or '未命名'}\n"
+                source_url = f"{book_url.rstrip('/')}/{doc.get('url')}"
                 markdown += (
-                    f"\n---\n\n来源: https://www.yuque.com/{namespace}/{book_slug}/{doc.get('url')}\n"
+                    f"\n---\n\n来源: {source_url}\n"
                     f"语雀文档ID: {key}\n"
                 )
-                markdown, count, img_errors = localize_images(
+                resources = normalize_resources(result.get("resources") or [], result.get("images") or [])
+                markdown, resource_counts, resource_errors = localize_resources(
                     markdown,
-                    result.get("images") or [],
+                    resources,
                     md_path,
                     args.download_timeout,
                     args.keep_remote_images,
+                    auth_cookies,
+                    args.download_attachments,
+                    source_url,
                     args,
                 )
-                image_success += count
-                if img_errors:
-                    image_failures.append({"document": doc.get("title"), "path": str(md_path), "failures": img_errors})
+                image_success += resource_counts.get("image", 0)
+                attachment_success += resource_counts.get("attachment", 0)
+                if resource_errors:
+                    resource_failures.append({"document": doc.get("title"), "path": str(md_path), "failures": resource_errors})
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
                 exported += 1
@@ -582,7 +767,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 emit(
                     args,
                     f"progress {index}/{len(docs)} exported={exported} skipped={skipped} "
-                    f"image_success={image_success} failures={len(failures)}",
+                    f"image_success={image_success} attachment_success={attachment_success} failures={len(failures)}",
                 )
 
         write_index(output, book, toc, doc_paths, selected_doc_ids or None)
@@ -597,12 +782,25 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             "skippedDocs": skipped,
             "stopped": stopped,
             "imageSuccess": image_success,
-            "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+            "attachmentSuccess": attachment_success,
+            "imageFailureCount": sum(1 for item in resource_failures for failure in item["failures"] if failure.get("kind") == "image"),
+            "attachmentFailureCount": sum(1 for item in resource_failures for failure in item["failures"] if failure.get("kind") == "attachment"),
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0.8) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0.4) or 0),
+            "downloadAttachments": bool(getattr(args, "download_attachments", True)),
             "failures": failures,
-            "imageFailures": image_failures,
+            "resourceFailures": resource_failures,
+            "imageFailures": [
+                {**item, "failures": [failure for failure in item["failures"] if failure.get("kind") == "image"]}
+                for item in resource_failures
+                if any(failure.get("kind") == "image" for failure in item["failures"])
+            ],
+            "attachmentFailures": [
+                {**item, "failures": [failure for failure in item["failures"] if failure.get("kind") == "attachment"]}
+                for item in resource_failures
+                if any(failure.get("kind") == "attachment" for failure in item["failures"])
+            ],
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -662,6 +860,7 @@ def run_gui() -> int:
     request_delay_var = tk.StringVar(value="0.8")
     request_jitter_var = tk.StringVar(value="0.4")
     close_chrome_var = tk.BooleanVar(value=False)
+    download_attachments_var = tk.BooleanVar(value=True)
     log_queue: queue.Queue[str] = queue.Queue()
     current_stop_event: dict[str, threading.Event | None] = {"event": None}
     buttons: list[tk.Widget] = []
@@ -756,6 +955,7 @@ def run_gui() -> int:
             request_delay=max(0.0, float(request_delay_var.get().strip() or "0.8")),
             request_jitter=max(0.0, float(request_jitter_var.get().strip() or "0.4")),
             keep_remote_images=True,
+            download_attachments=download_attachments_var.get(),
             close_started_chrome=close_chrome_var.get(),
             stop_event=None,
             log_callback=log,
@@ -908,7 +1108,17 @@ def run_gui() -> int:
                 result = fn()
                 summary = {
                     k: result.get(k)
-                    for k in ("totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
+                    for k in (
+                        "totalDocs",
+                        "exportedDocs",
+                        "skippedDocs",
+                        "requestCount",
+                        "stopped",
+                        "imageSuccess",
+                        "imageFailureCount",
+                        "attachmentSuccess",
+                        "attachmentFailureCount",
+                    )
                     if k in result
                 }
                 log(f"{'已停止' if result.get('stopped') else '完成'}：{name}")
@@ -989,7 +1199,8 @@ def run_gui() -> int:
     row("调试端口", port_var, 5)
     row("请求延迟秒", request_delay_var, 6)
     row("请求随机浮动秒", request_jitter_var, 7)
-    tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=8, column=1, sticky="w", pady=5)
+    tk.Checkbutton(form, text="同时下载语雀附件", variable=download_attachments_var).grid(row=8, column=1, sticky="w", pady=5)
+    tk.Checkbutton(form, text="导出后关闭本工具启动的浏览器", variable=close_chrome_var).grid(row=9, column=1, sticky="w", pady=5)
 
     actions = tk.Frame(body, padx=14, pady=4)
     actions.pack(fill="x")
@@ -1064,6 +1275,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--request-jitter", type=float, default=0.4, help="Extra random seconds added before each document/API request")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")
     parser.add_argument("--drop-failed-images", dest="keep_remote_images", action="store_false", help="Remove image URL when download fails")
+    parser.add_argument("--download-attachments", action="store_true", default=True, help="Download Yuque file attachments locally")
+    parser.add_argument("--skip-attachments", dest="download_attachments", action="store_false", help="Keep Yuque attachment links remote instead of downloading files")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close Chrome started by this script after export")
     return parser.parse_args(argv)
 
@@ -1093,7 +1306,19 @@ def main(argv: list[str]) -> int:
     if args.scan_toc:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
-        keys = ("cookieCount", "authFile", "totalDocs", "exportedDocs", "skippedDocs", "requestCount", "stopped", "imageSuccess", "imageFailureCount")
+        keys = (
+            "cookieCount",
+            "authFile",
+            "totalDocs",
+            "exportedDocs",
+            "skippedDocs",
+            "requestCount",
+            "stopped",
+            "imageSuccess",
+            "imageFailureCount",
+            "attachmentSuccess",
+            "attachmentFailureCount",
+        )
         print(json.dumps({k: report[k] for k in keys if k in report}, ensure_ascii=False, indent=2))
     return 0
 

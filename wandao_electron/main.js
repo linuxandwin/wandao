@@ -35,6 +35,7 @@ const ALLOWED_SCRIPTS = new Set([
   'export_feishu.py',
   'export_aliyun_thoughts.py',
   'export_yinxiang.py',
+  'import_yuque.py',
   'import_feishu.py'
 ]);
 
