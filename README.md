@@ -2,7 +2,7 @@
 
 > 让知识没有壁垒，多平台文档互转。用自动化脚本代替用户手动打开页面、复制正文、整理目录、搬运文档的重复劳动。
 
-[![License](https://img.shields.io/github/license/tllovesxs/wandao)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#系统要求)
 [![GitHub](https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black)](https://github.com/tllovesxs/wandao)
