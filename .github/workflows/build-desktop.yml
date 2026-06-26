@@ -8,16 +8,33 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}
+    name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - name: Windows x64
+            os: windows-latest
+            command: npm run build:win
+            artifact: wandao-Windows-x64
+          - name: macOS Intel
+            os: macos-13
+            command: npm run build:mac:x64
+            artifact: wandao-macOS-x64
+          - name: macOS Apple-Silicon
+            os: macos-14
+            command: npm run build:mac:arm64
+            artifact: wandao-macOS-arm64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -30,25 +47,16 @@ jobs:
         working-directory: wandao_electron
         run: npm ci
 
-      - name: Build Windows
-        if: runner.os == 'Windows'
+      - name: Build desktop package
         working-directory: wandao_electron
-        shell: powershell
-        run: |
-          $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-          npx electron-builder --win --publish never "-c.win.signAndEditExecutable=false" "-c.win.signDlls=false"
-
-      - name: Build macOS
-        if: runner.os == 'macOS'
-        working-directory: wandao_electron
-        run: |
-          export CSC_IDENTITY_AUTO_DISCOVERY=false
-          npx electron-builder --mac --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: ${{ matrix.command }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wandao-${{ runner.os }}
+          name: ${{ matrix.artifact }}
           path: |
             wandao_electron/dist/*.exe
             wandao_electron/dist/*.zip

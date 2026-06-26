@@ -1,26 +1,24 @@
-# Wandao 1.0.8 Release Notes
+# Wandao 1.0.9 Release Notes
 
 ## 新增
 
-- 新增“印象笔记 Markdown 导入”：支持把本地 Markdown 批量写入印象笔记。
-- 支持将 Markdown 中的本地图片和普通附件作为印象笔记 Resource 上传。
-- 支持按本地目录映射印象笔记笔记本组和笔记本。
-- 命令行启动器新增 `yinxiang-import` provider。
+- Windows 发行版内置 Python standalone 运行时，普通用户不需要额外安装 Python。
+- macOS 构建流程支持内置 Python 运行时，可分别生成 Intel Mac 和 Apple Silicon Mac 压缩包。
+- 新增运行时准备脚本 `wandao_electron/scripts/prepare_python_runtime.py`，打包前自动下载对应平台 Python 并安装依赖。
 
 ## 改进
 
-- 桌面端左侧“导入”分组新增“印象笔记 Markdown 导入”入口。
-- 印象笔记导入提供“登录并同步凭证、扫描目录、单篇导入测试、批量导入”完整流程。
-- 图片导入时会自动识别 PNG、GIF、JPEG 宽高，提高印象笔记客户端渲染稳定性。
-- 更新 README、桌面端说明和使用教程。
+- Electron 主进程会优先调用发行包里的 `python-runtime`，找不到时才回退到系统 Python，方便开发调试。
+- GitHub Actions 桌面端构建拆分为 Windows x64、macOS Intel、macOS Apple Silicon 三个产物。
+- 更新 README、桌面端说明和使用教程，明确普通用户下载发行版即可使用。
 
 ## 发行包
 
-- Windows：`.exe` 安装包和便携版。
-- macOS：源码压缩包；真正的 macOS App 建议在 macOS 或 GitHub Actions macOS runner 上构建。
+- Windows：`.exe` 安装包和便携版，内置 Python 和依赖。
+- macOS：`.zip` 应用压缩包，建议通过 GitHub Actions 或 macOS 本机构建 Intel / Apple Silicon 版本。
 
 ## 注意
 
-- 桌面端当前仍需要本机安装 Python 3.10+。
-- 使用印象笔记导入/导出前，请在本机 Python 环境安装 `evernote-backup==1.13.1`，源码用户可执行 `python -m pip install -r requirements.txt`。
+- 源码运行、参与开发或自行打包时仍需要本机 Python 3.10+ 与 Node.js。
+- 发行版不保存账号密码、Cookie、App Secret、Token 等敏感信息到仓库。
 - 请只处理自己有权限访问的内容，并遵守目标平台服务条款。

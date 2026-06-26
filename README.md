@@ -3,7 +3,7 @@
 > 让知识没有壁垒，多平台文档互转。用自动化脚本代替用户手动打开页面、复制正文、整理目录、搬运文档的重复劳动。
 
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-bundled%20in%20release-blue)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#系统要求)
 [![GitHub](https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black)](https://github.com/tllovesxs/wandao)
 
@@ -77,8 +77,8 @@ Author: `tllovesxs`
 
 | 依赖 | 要求 |
 |------|------|
-| Python | 3.10 或更高版本，桌面版当前也会调用本机 Python 后端脚本 |
-| Node.js | 仅源码运行桌面版或参与开发时需要 |
+| Python | 普通用户下载发行版时无需安装；源码运行和参与开发时需要 3.10 或更高版本 |
+| Node.js | 仅源码运行桌面版、打包发行版或参与开发时需要 |
 | 浏览器 | Chrome、Edge 或 Chromium |
 | 权限 | 用户需要拥有目标知识库的正常访问权限 |
 
@@ -102,7 +102,7 @@ Author: `tllovesxs`
 
 顶部“夜间模式”可切换深色界面；“检查更新”会检测 GitHub Releases 是否有新版本，发现新版后会提示前往下载。
 
-普通用户推荐直接下载发行版，不需要手动拉取源码。
+普通用户推荐直接下载发行版，不需要手动拉取源码，也不需要额外安装 Python。发行版会自带运行导入导出脚本所需的 Python 运行时和依赖。
 
 ### 协助开发：拉取源码
 
@@ -138,15 +138,26 @@ npm start
 
 ### 发行包构建说明
 
-Windows 发行包可以在 Windows 本机通过 Electron Builder 生成。macOS 应用压缩包需要在 macOS 环境构建，推荐使用项目内置的 GitHub Actions workflow，或在 macOS 本机执行：
+发行包会在打包前自动准备内置 Python 运行时。构建产物里的用户不需要手动安装 Python。
+
+Windows 发行包可以在 Windows 本机生成：
+
+```powershell
+cd wandao_electron
+npm ci
+npm run build:win
+```
+
+macOS 应用压缩包需要在 macOS 环境构建。推荐使用项目内置的 GitHub Actions workflow 分别生成 Intel 和 Apple Silicon 版本；如果在 macOS 本机打包，可以执行：
 
 ```bash
 cd wandao_electron
 npm ci
-npm run build:mac
+npm run build:mac:x64      # Intel Mac
+npm run build:mac:arm64    # Apple Silicon Mac
 ```
 
-在 Windows 上准备发布时，可以先生成 Windows `.exe`，同时提供源码压缩包；真正的 macOS App `.zip` 由 macOS runner 构建后上传 Release。
+在 Windows 上准备发布时，可以先生成 Windows `.exe`；真正的 macOS App `.zip` 由 macOS runner 或 Mac 本机构建后上传 Release。
 
 ### 备用方式：Python 启动器
 

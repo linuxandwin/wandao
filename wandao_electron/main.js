@@ -63,8 +63,55 @@ function findPythonScript(scriptName = 'import_feishu.py') {
   throw new Error(`无法找到 ${scriptName} 脚本`);
 }
 
+function bundledPythonInfo() {
+  const executable = process.platform === 'win32' ? 'python.exe' : path.join('bin', 'python3');
+  const possibleRoots = [
+    path.join(process.resourcesPath || '', 'python-runtime'),
+    path.join(__dirname, 'runtime', 'python-runtime'),
+    path.join(app.getAppPath(), 'runtime', 'python-runtime')
+  ];
+
+  for (const root of possibleRoots) {
+    if (!root) {
+      continue;
+    }
+    const command = path.join(root, executable);
+    if (fs.existsSync(command)) {
+      return { command, root };
+    }
+  }
+
+  return null;
+}
+
 function pythonCommand() {
-  return process.env.WANDAO_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const configuredPython = process.env.WANDAO_PYTHON || process.env.PYTHON;
+  if (configuredPython) {
+    return configuredPython;
+  }
+  const bundledPython = bundledPythonInfo();
+  if (bundledPython) {
+    return bundledPython.command;
+  }
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+function pythonEnv() {
+  const env = {
+    ...process.env,
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1'
+  };
+  const bundledPython = bundledPythonInfo();
+  if (bundledPython) {
+    const binDir = process.platform === 'win32' ? bundledPython.root : path.join(bundledPython.root, 'bin');
+    const scriptsDir = process.platform === 'win32' ? path.join(bundledPython.root, 'Scripts') : path.join(bundledPython.root, 'bin');
+    env.PATH = [binDir, scriptsDir, env.PATH].filter(Boolean).join(path.delimiter);
+    env.PYTHONNOUSERSITE = '1';
+    env.WANDAO_PYTHON_RUNTIME = bundledPython.root;
+  }
+  return env;
 }
 
 function parseLastJson(stdout) {
@@ -373,7 +420,7 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     const proc = spawn(pythonCommand(), pythonArgs, {
       cwd: path.dirname(scriptPath),
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
+      env: pythonEnv()
     });
 
     if (options?.stdinText) {

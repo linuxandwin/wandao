@@ -49,6 +49,23 @@ node --check wandao_electron\renderer\app.js
 
 如果只改文档，可以说明没有运行代码检查。
 
+## 打包发行版
+
+发行版会内置 Python 运行时，打包命令会先自动准备对应平台运行时：
+
+```powershell
+cd wandao_electron
+npm run build:win
+```
+
+macOS 需要在 macOS 本机或 GitHub Actions macOS runner 构建：
+
+```bash
+cd wandao_electron
+npm run build:mac:x64
+npm run build:mac:arm64
+```
+
 ## PR 建议
 
 一个 PR 尽量只解决一个问题，例如：

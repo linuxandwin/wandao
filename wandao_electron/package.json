@@ -1,14 +1,20 @@
 {
   "name": "wandao",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build:win": "electron-builder --win",
-    "build:mac": "electron-builder --mac",
-    "build:all": "electron-builder -mw"
+    "prepare:python": "python scripts/prepare_python_runtime.py --target auto",
+    "prepare:python:win": "python scripts/prepare_python_runtime.py --target win-x64",
+    "prepare:python:mac:x64": "python scripts/prepare_python_runtime.py --target mac-x64",
+    "prepare:python:mac:arm64": "python scripts/prepare_python_runtime.py --target mac-arm64",
+    "build:win": "npm run prepare:python:win && electron-builder --win --publish never",
+    "build:mac": "npm run prepare:python && electron-builder --mac --publish never",
+    "build:mac:x64": "npm run prepare:python:mac:x64 && electron-builder --mac --x64 --publish never",
+    "build:mac:arm64": "npm run prepare:python:mac:arm64 && electron-builder --mac --arm64 --publish never",
+    "build:all": "npm run build:win"
   },
   "keywords": [
     "knowledge-base",
@@ -76,6 +82,10 @@
       {
         "from": "../requirements.txt",
         "to": "python/requirements.txt"
+      },
+      {
+        "from": "runtime/python-runtime",
+        "to": "python-runtime"
       }
     ],
     "win": {

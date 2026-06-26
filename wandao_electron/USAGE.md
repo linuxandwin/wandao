@@ -7,11 +7,14 @@
 - Windows：下载 `.exe` 安装包或便携版。
 - macOS：下载 `.zip` 压缩包，解压后运行应用。
 
-当前桌面端仍会调用本机 Python 后端，请先安装 Python 3.10+。使用印象笔记导出时，还需要在本机 Python 中安装 `evernote-backup==1.13.1`。
+发行版已内置 Python 运行时和导入导出依赖，普通用户不需要额外安装 Python。
 
 ## 源码运行
 
+源码运行和参与开发仍然需要本机 Python 3.10+ 与 Node.js：
+
 ```bash
+python -m pip install -r requirements.txt
 cd wandao_electron
 npm install
 npm start
@@ -89,7 +92,8 @@ npm start
 
 ```bash
 npm run build:win
-npm run build:mac
+npm run build:mac:x64
+npm run build:mac:arm64
 ```
 
-Windows 包可在 Windows 本机生成。macOS 包建议在 macOS 或 GitHub Actions 的 macOS runner 生成。
+打包命令会先下载对应平台的 Python standalone 运行时，并安装 `requirements.txt` 里的依赖。Windows 包可在 Windows 本机生成；macOS 包建议在 macOS 或 GitHub Actions 的 macOS runner 生成。
