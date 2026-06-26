@@ -37,6 +37,14 @@ const TOOLS = {
     outputParam: '--source-dir',
     isImport: true
   },
+  'yinxiang-import': {
+    title: '印象笔记 Markdown 导入',
+    description: '将本地 Markdown 批量导入到印象笔记',
+    script: 'import_yinxiang.py',
+    outputParam: '--source-dir',
+    isImport: true,
+    noUrl: true
+  },
   'aliyun': {
     title: '阿里云 Thoughts 工作区导出',
     description: '将阿里云 Thoughts 导出为 Markdown',
@@ -344,6 +352,7 @@ function initializeToolHandlers(toolId) {
       zsxq: 'exports/zsxq',
       yuque: 'exports/yuque',
       'yuque-import': 'exports/yuque',
+      'yinxiang-import': 'exports/yinxiang',
       'feishu-export': 'exports/feishu',
       aliyun: 'exports/aliyun-thoughts',
       yinxiang: 'exports/yinxiang'
@@ -366,6 +375,11 @@ function initializeToolHandlers(toolId) {
         document.getElementById(`${prefix}-output`).value = dir;
       }
     });
+  }
+
+  if (toolId === 'yinxiang-import') {
+    initializeYinxiangImportHandlers();
+    return;
   }
 
   // Login button
@@ -599,6 +613,153 @@ function initializeYuqueImportHandlers() {
       await runYuqueImportCommand(buildYuqueImportArgs({ single: true }), '语雀单篇导入测试', '正在导入第一篇 Markdown...');
     } catch (error) {
       alert(formatError(error));
+    }
+  });
+}
+
+function buildYinxiangImportArgs(options = {}) {
+  const sourceDir = document.getElementById('yinxiang-import-source')?.value.trim();
+  const sourceFile = document.getElementById('yinxiang-import-source-file')?.value.trim();
+  const notebook = document.getElementById('yinxiang-import-notebook')?.value.trim();
+  const stack = document.getElementById('yinxiang-import-stack')?.value.trim();
+  const maxImport = document.getElementById('yinxiang-import-max')?.value;
+  const delay = document.getElementById('yinxiang-import-delay')?.value;
+
+  if (!sourceDir) throw new Error('请选择 Markdown 目录');
+
+  const args = ['--source-dir', sourceDir];
+  if (sourceFile) args.push('--source-file', sourceFile);
+  if (notebook) args.push('--notebook', notebook);
+  if (stack) args.push('--stack', stack);
+  if (maxImport && parseInt(maxImport, 10) > 0) args.push('--max-import', maxImport);
+  if (delay) args.push('--request-delay', delay);
+  args.push('--progress-every', '1');
+
+  const preserveFolders = document.getElementById('yinxiang-import-preserve-folders');
+  if (preserveFolders && preserveFolders.checked) {
+    args.push('--preserve-folders');
+  }
+
+  if (options.plan) {
+    args.push('--scan-source');
+  } else if (options.single) {
+    args.push('--import-one', '--yes');
+  } else {
+    args.push('--import-all', '--yes');
+  }
+  return args;
+}
+
+async function handleYinxiangImportLogin() {
+  const username = document.getElementById('yinxiang-import-username')?.value.trim();
+  const password = document.getElementById('yinxiang-import-password')?.value || '';
+  if (!username || !password) {
+    alert('请填写印象笔记账号和密码。已有凭证时可以直接扫描目录或导入。');
+    return;
+  }
+
+  const args = ['--init-auth', '--username', username, '--password-stdin'];
+  setRunning(true, 'yinxiang-import');
+  startProgress('登录并同步印象笔记凭证', '正在初始化本地同步库并同步笔记...');
+  log('开始：登录并同步印象笔记凭证', 'info');
+  try {
+    const result = await window.electronAPI.runPythonCommand('export_yinxiang.py', args, {
+      stdinText: `${password}\n`
+    });
+    if (result.success) {
+      log('印象笔记凭证已保存并同步完成', 'success');
+      if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+      finishProgress(true, '印象笔记凭证已保存，可以开始导入 Markdown');
+    } else {
+      log(`登录同步失败：${result.error}`, 'error');
+      finishProgress(false, '登录同步失败，请查看运行日志');
+    }
+  } catch (error) {
+    log(`错误：${formatError(error)}`, 'error');
+    finishProgress(false, '登录同步出错，请查看运行日志');
+  } finally {
+    setRunning(false, 'yinxiang-import');
+  }
+}
+
+async function runYinxiangImportCommand(args, title, detail = '正在处理印象笔记导入任务...') {
+  setRunning(true, 'yinxiang-import');
+  startProgress(title, detail);
+  log(`开始：${title}`, 'info');
+  try {
+    const result = await window.electronAPI.runPythonCommand('import_yinxiang.py', args);
+    if (result.success) {
+      log(`${title}完成`, 'success');
+      if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+      finishProgress(true, `${title}完成`);
+      return result.data || {};
+    }
+    log(`${title}失败：${result.error}`, 'error');
+    finishProgress(false, `${title}失败，请查看运行日志`);
+  } catch (error) {
+    log(`错误：${formatError(error)}`, 'error');
+    finishProgress(false, `${title}出错，请查看运行日志`);
+  } finally {
+    setRunning(false, 'yinxiang-import');
+  }
+  return null;
+}
+
+function initializeYinxiangImportHandlers() {
+  document.getElementById('yinxiang-import-login')?.addEventListener('click', handleYinxiangImportLogin);
+
+  document.getElementById('yinxiang-import-browse-source')?.addEventListener('click', async () => {
+    const current = document.getElementById('yinxiang-import-source')?.value || '';
+    const dir = await window.electronAPI.selectDirectory({
+      title: '选择 Markdown 目录',
+      defaultPath: current
+    });
+    if (dir) document.getElementById('yinxiang-import-source').value = dir;
+  });
+
+  document.getElementById('yinxiang-import-browse-file')?.addEventListener('click', async () => {
+    const file = await window.electronAPI.selectFile({
+      title: '选择 Markdown 文件',
+      filters: [{ name: 'Markdown 文件', extensions: ['md'] }, { name: '所有文件', extensions: ['*'] }]
+    });
+    if (file) document.getElementById('yinxiang-import-source-file').value = file;
+  });
+
+  document.getElementById('yinxiang-import-plan')?.addEventListener('click', async () => {
+    try {
+      await runYinxiangImportCommand(buildYinxiangImportArgs({ plan: true }), '扫描印象笔记导入目录', '正在扫描本地 Markdown 文件...');
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+
+  document.getElementById('yinxiang-import-one')?.addEventListener('click', async () => {
+    try {
+      if (confirm('这会在印象笔记中创建一篇测试笔记。确认继续吗？')) {
+        await runYinxiangImportCommand(buildYinxiangImportArgs({ single: true }), '印象笔记单篇导入测试', '正在导入第一篇 Markdown...');
+      }
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+
+  document.getElementById('yinxiang-import-export')?.addEventListener('click', async () => {
+    try {
+      if (confirm('这会向印象笔记批量创建笔记。确认继续吗？')) {
+        await runYinxiangImportCommand(buildYinxiangImportArgs(), '印象笔记批量导入', '正在批量导入 Markdown...');
+      }
+    } catch (error) {
+      alert(formatError(error));
+    }
+  });
+
+  document.getElementById('yinxiang-import-stop')?.addEventListener('click', handleStop);
+  document.getElementById('yinxiang-import-open-dir')?.addEventListener('click', async () => {
+    const dir = document.getElementById('yinxiang-import-source')?.value.trim();
+    if (dir) {
+      await window.electronAPI.openPath(dir);
+    } else {
+      alert('请先选择 Markdown 目录');
     }
   });
 }

@@ -53,6 +53,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "url_arg": "无需 URL",
         "url_hint": "首次登录并同步后，可读取本地目录并勾选导出",
     },
+    "yinxiang-import": {
+        "label": "印象笔记 Markdown 导入",
+        "script": "import_yinxiang.py",
+        "url_arg": "无需 URL",
+        "url_hint": "选择本地 Markdown 目录后，可导入到印象笔记",
+    },
 }
 
 

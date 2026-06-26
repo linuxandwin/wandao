@@ -42,7 +42,7 @@ npm start
 提交 PR 前建议至少运行：
 
 ```powershell
-python -m py_compile wandao.py export_zsxq.py export_yuque.py export_feishu.py export_aliyun_thoughts.py export_yinxiang.py import_feishu.py import_yuque.py
+python -m py_compile wandao.py export_zsxq.py export_yuque.py export_feishu.py export_aliyun_thoughts.py export_yinxiang.py import_feishu.py import_yuque.py import_yinxiang.py
 node --check wandao_electron\main.js
 node --check wandao_electron\renderer\app.js
 ```

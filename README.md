@@ -8,7 +8,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black)](https://github.com/tllovesxs/wandao)
 
 万能导希望解决一个很朴素的问题：知识不应该被平台格式、复制粘贴和目录迁移卡住。你可以把自己有权限访问的项目教学资料、团队知识库、课程文档转换为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台里，并保留目录层级和正文图片以及格式。
-关键词:语雀转飞书,语雀导出,飞书导出,知识星球导出,阿里云导出.
+关键词:语雀转飞书,语雀导出,飞书导出,知识星球导出,阿里云导出,印象笔记导入.
 
 导出的文档可以和源码项目放在一起，再交给 AI 阅读，让 AI 同时理解“教学文档 + 真实代码 + 项目结构”。这样学习大型项目时，资料不再散落在多个页面里，提问也不再只是孤立地复制一小段内容。
 
@@ -34,7 +34,7 @@ Author: `tllovesxs`
 
 | 功能 | 说明 |
 |------|------|
-| 多平台互转 | 支持多个知识库平台导出为 Markdown，并支持本地 Markdown 导入飞书 Wiki |
+| 多平台互转 | 支持多个知识库平台导出为 Markdown，并支持本地 Markdown 导入飞书 Wiki、语雀和印象笔记 |
 | 图形化界面 | 提供统一桌面端，侧边栏按“导出 / 导入”分类展示平台入口 |
 | 夜间模式 | 顶部可切换日间/夜间主题，并记住用户偏好 |
 | 版本检查 | 支持检测 GitHub Releases 是否有新版本，发现新版后提示前往下载 |
@@ -45,6 +45,7 @@ Author: `tllovesxs`
 | 文档导入 | 支持将本地 Markdown 批量导入飞书 Wiki，并恢复多层文件夹结构 |
 | 语雀导入 | 支持将本地 Markdown 创建/更新到语雀知识库，并生成导入索引 |
 | 印象笔记导出 | 支持印象笔记同步到本地后按笔记本目录导出 Markdown |
+| 印象笔记导入 | 支持将本地 Markdown 批量导入印象笔记，并上传本地图片和附件 |
 | 评论区可选 | 知识星球导出可选择是否同时保存页面可见评论区内容 |
 | 图片与附件本地化 | 尽量下载正文图片到本地 `assets/`，下载语雀/印象笔记等附件到本地附件目录，减少后续失效风险 |
 | 浏览器自动查找 | 自动扫描 Chrome、Edge、Chromium，也支持用户手动指定浏览器 |
@@ -68,6 +69,7 @@ Author: `tllovesxs`
 - 支持阿里云 Thoughts 任意工作区导出为 Markdown。
 - 支持印象笔记任意笔记本导出为 Markdown。
 - 支持本地 Markdown 批量导入飞书 Wiki，并恢复多层目录结构。(全网首发)
+- 支持本地 Markdown 批量导入印象笔记，并按本地目录映射笔记本组和笔记本。
 
 浏览器类平台会使用本机 Chrome/Edge 的调试协议打开页面，登录由用户自己完成，凭证文件只保存 Cookie，不保存账号密码。印象笔记会保存本机同步凭证，同样不保存明文密码。
 
@@ -180,6 +182,18 @@ python wandao.py --list
 
 印象笔记导出不需要入口 URL。第一次使用时，在左侧选择“印象笔记导出”，填写账号和密码后点击“登录并同步”。工具会把同步凭证保存在本机同步库里，不会保存明文密码。同步完成后点击“读取目录”，再勾选笔记本或笔记并导出。
 
+### 印象笔记 Markdown 导入
+
+1. 在左侧展开“导入”，选择“印象笔记 Markdown 导入”。
+2. 第一次使用先填写印象笔记账号和密码，点击“登录并同步凭证”。已有本地同步库时可以跳过这一步。
+3. 选择本地 Markdown 目录。
+4. 填写默认目标笔记本；如果勾选“按本地目录创建笔记本组/笔记本”，工具会把一级目录作为笔记本组，后续目录作为笔记本名。
+5. 点击“扫描目录”，确认即将导入的 Markdown 数量。
+6. 点击“单篇导入测试”，确认正文、图片和附件正常。
+7. 点击“批量导入”。
+
+印象笔记导入会把本地图片和普通附件作为 Resource 写入笔记。Markdown 是通用格式，不同平台导出的复杂表格、折叠块或特殊组件可能会被简化为普通文本或基础 HTML。
+
 ### 语雀 Markdown 导入
 
 1. 在左侧展开“导入”，选择“语雀 Markdown 导入”。
@@ -248,6 +262,7 @@ python wandao.py --provider yuque --gui
 python wandao.py --provider feishu --gui
 python wandao.py --provider aliyun-thoughts --gui
 python wandao.py --provider yinxiang --gui
+python wandao.py --provider yinxiang-import --gui
 ```
 
 知识星球任意项目：
@@ -296,6 +311,19 @@ python export_yinxiang.py --scan-toc
 
 # 导出全部
 python wandao.py --provider yinxiang -- --output "./exports/yinxiang" --incremental
+```
+
+印象笔记 Markdown 导入：
+
+```powershell
+# 先扫描本地 Markdown
+python wandao.py --provider yinxiang-import -- --source-dir "./exports/yuque" --scan-source
+
+# 单篇导入测试
+python wandao.py --provider yinxiang-import -- --source-dir "./exports/yuque" --notebook "万能导导入" --import-one --yes
+
+# 批量导入，并按本地目录映射笔记本组/笔记本
+python wandao.py --provider yinxiang-import -- --source-dir "./exports/yuque" --notebook "万能导导入" --preserve-folders --import-all --yes
 ```
 
 浏览器安装在非常规位置时：
@@ -374,6 +402,7 @@ wandao/
 ├── export_yinxiang.py                # 印象笔记导出器
 ├── import_yuque.py                   # 本地 Markdown 导入语雀
 ├── import_feishu.py                  # 本地 Markdown 导入飞书 Wiki
+├── import_yinxiang.py                # 本地 Markdown 导入印象笔记
 ├── wandao_electron/                  # 统一 Electron 桌面端
 ├── prompts/项目学习导师提示词.md      # 项目学习提示词
 ├── docs/                             # 使用教程、合规说明和截图

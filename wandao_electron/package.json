@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -64,6 +64,10 @@
       {
         "from": "../export_yinxiang.py",
         "to": "python/export_yinxiang.py"
+      },
+      {
+        "from": "../import_yinxiang.py",
+        "to": "python/import_yinxiang.py"
       },
       {
         "from": "../gui_utils.py",

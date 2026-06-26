@@ -1,6 +1,6 @@
 [project]
 name = "wandao"
-version = "1.0.7"
+version = "1.0.8"
 description = "万能导：多平台知识库 Markdown 导出与互转工具"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,5 +30,6 @@ py-modules = [
   "export_yinxiang",
   "import_feishu",
   "import_yuque",
+  "import_yinxiang",
   "gui_utils",
 ]
