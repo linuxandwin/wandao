@@ -74,7 +74,7 @@ Author: `tllovesxs`
 - 夜间模式和更新检查：桌面端支持主题切换和新版本提示。
 
 ## 快速开始
-
+<img width="2193" height="788" alt="image" src="https://github.com/user-attachments/assets/b32d02e5-7357-4dad-9443-087503d2aafa" />
 ### 普通用户
 
 1. 打开 [Releases](https://github.com/tllovesxs/wandao/releases)。
