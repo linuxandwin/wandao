@@ -1,4 +1,4 @@
-# Wandao 1.1.0 Release Notes
+# Wandao 1.1.1 Release Notes
 
 ## 新增
 
@@ -17,7 +17,7 @@
 - ima 导入默认跳过 Markdown 正文引用到的本地图片和附件，避免配图被重复当成独立知识库文件上传。
 - ima 导入支持扫描本地目录并统计待上传文件，单文件测试通过后再批量上传。
 - README 重新整理为更简洁的项目首页结构，补充 Gitee 镜像入口，突出支持平台、快速开始、常用流程和合规说明。
-- 版本号统一升级到 `1.1.0`，用于这次新增 ima 知识库导入导出能力。
+- 版本号统一升级到 `1.1.1`，用于这次新增 ima 知识库导入导出能力，并包含知识星球多层目录和 macOS 打包修复。
 
 ## 当前限制
 
@@ -35,9 +35,9 @@
 
 ## 下载
 
-- Windows 安装版：下载 `Wandao Setup 1.1.0.exe`。
-- Windows 免安装版：下载 `Wandao 1.1.0.exe`。
-- macOS Apple Silicon：下载 `Wandao-1.1.0-arm64-mac.zip`，适合 M1 / M2 / M3 / M4 芯片 Mac。
+- Windows 安装版：下载 `Wandao Setup 1.1.1.exe`。
+- Windows 免安装版：下载 `Wandao 1.1.1.exe`。
+- macOS Apple Silicon：下载 `Wandao-1.1.1-arm64-mac.zip`，适合 M1 / M2 / M3 / M4 芯片 Mac。
 - macOS Intel：本次不默认提供自动构建包，Intel 芯片 Mac 用户可以先使用源码方式运行，后续按需求补充。
 
 ## 注意
