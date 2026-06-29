@@ -1042,6 +1042,36 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
             title=source.get("title") or video_info.get("title") or topic_url,
             href=topic_url,
         )
+    article_info = find_article_url_on_topic(cdp, args)
+    article_url = article_info.get("article") or ""
+    if article_url:
+        topic_comments = collect_current_comments(cdp, args)
+        navigate_with_retry(cdp, article_url, args)
+        wait_eval(
+            cdp,
+            "({href: location.href, ok: !!document.querySelector('.content.ql-editor'), len: (document.body && document.body.innerText || '').length})",
+            lambda value: bool(value.get("ok")) or value.get("len", 0) > 1000,
+            timeout=35,
+            args=args,
+        )
+        if detect_rate_limited_page(cdp).get("limited"):
+            raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or source.get('key')}")
+        content = cdp.evaluate(
+            f"({ZSXQ_CONVERTER_JS})({js_string(source.get('title') or '知识星球文章')}, {js_string('.content.ql-editor')})",
+            timeout=90,
+        )
+        if content_is_rate_limited(content):
+            raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or source.get('key')}")
+        attach_comments_to_content(content, topic_comments, bool(getattr(args, "include_comments", False)))
+        content["sourceType"] = "article"
+        content["shortUrl"] = topic_url
+        content["articleUrl"] = cdp.evaluate("location.href", timeout=10)
+        content["topicUrl"] = topic_url
+        content["sourceText"] = source.get("title") or ""
+        content["tocKey"] = source.get("key") or ""
+        content["tocGroup"] = source.get("groupTitle") or info.get("groupTitle") or ""
+        content["tocTitle"] = source.get("title") or info.get("topicTitle") or ""
+        return content
     content = cdp.evaluate(
         f"({ZSXQ_CONVERTER_JS})({js_string(source.get('title') or '知识星球文档')}, {js_string('.column-topic-detail .talk-content-container, .column-topic-detail .answer-content-container, .column-topic-detail, #topic-detail-container, .topic-detail, [class*=TopicDetail], [class*=topic-detail], .talk-content-container, .answer-content-container')})",
         timeout=90,
@@ -1391,7 +1421,11 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
         current_url = cdp.evaluate("location.href", timeout=10)
         if not is_zsxq_page_url(current_url):
             raise SkipDocument("non-zsxq-page-link", title=link.get("text") or href, href=current_url or href)
-        info = find_article_url_on_topic(cdp, args)
+        current_host = urllib.parse.urlparse(current_url or "").netloc.lower()
+        if current_host == "articles.zsxq.com":
+            info = {"href": current_url, "article": ""}
+        else:
+            info = find_article_url_on_topic(cdp, args)
         if detect_rate_limited_page(cdp).get("limited"):
             pause_for_rate_limit(args, href, attempt, retries)
             continue
@@ -1977,7 +2011,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         continue
                 title = item.get("title") or link.get("text") or "知识星球文档"
                 current_output = Path(link.get("outputDir") or output)
-                children = unique_zsxq_links(item.get("zsxqLinks") or [])
+                raw_markdown = item.get("markdown") or f"# {title}\n"
+                children = unique_zsxq_links((item.get("zsxqLinks") or []) + markdown_links(raw_markdown))
                 should_folderize = (
                     depth < args.max_depth
                     and args.folder_link_threshold > 0
@@ -1996,7 +2031,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     md_path = next_markdown_path(current_output, title)
                     child_output = current_output
                 total_comments += int(item.get("commentCount") or 0)
-                markdown = append_source_meta(item.get("markdown") or f"# {title}\n", item)
+                markdown = append_source_meta(raw_markdown, item)
                 markdown, count, img_errors = localize_images(
                     markdown,
                     item.get("images") or [],

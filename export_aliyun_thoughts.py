@@ -729,28 +729,54 @@ def localize_images(
     return markdown, success, failures
 
 
-def build_paths(nodes: list[Node], output: Path) -> tuple[dict[str, Path], dict[str, list[Node]], list[Node]]:
+def build_paths(nodes: list[Node], output: Path) -> tuple[dict[str, Path], dict[str, Path], dict[str, list[Node]], list[Node]]:
     children: dict[str, list[Node]] = {}
     for node in nodes:
         children.setdefault(node.parent_id or "ROOT", []).append(node)
     for bucket in children.values():
         bucket.sort(key=lambda n: (n.pos, n.title))
 
-    top_folders = [n for n in children.get("ROOT", []) if n.type == "folder"]
-    folder_paths = {
-        folder.id: output / f"{pad(index)}-{sanitize_filename(folder.title)}"
-        for index, folder in enumerate(top_folders, start=1)
-    }
-    return folder_paths, children, top_folders
+    folder_paths: dict[str, Path] = {}
+    doc_paths: dict[str, Path] = {}
+    node_index: dict[str, int] = {}
+    for siblings in children.values():
+        for index, node in enumerate(siblings, start=1):
+            node_index[node.id] = index
 
+    def container_for(parent_id: str | None) -> Path:
+        if not parent_id:
+            return output
+        parent = next((node for node in nodes if node.id == parent_id), None)
+        if not parent:
+            return output
+        if parent.type == "folder":
+            return folder_paths[parent.id]
+        # A document can have child documents. The file itself cannot be a
+        # directory, so child documents are stored in a same-prefix companion
+        # folder and linked from the parent document.
+        parent_container = container_for(parent.parent_id)
+        return folder_paths.setdefault(
+            parent.id,
+            parent_container / f"{pad(node_index.get(parent.id, 1))}-{sanitize_filename(parent.title)}",
+        )
 
-def top_folder_for(node: Node, by_id: dict[str, Node], folder_paths: dict[str, Path]) -> str | None:
-    current = by_id.get(node.parent_id or "")
-    while current and current.parent_id:
-        current = by_id.get(current.parent_id)
-    if current and current.id in folder_paths:
-        return current.id
-    return None
+    def visit(parent_id: str | None) -> None:
+        parent_container = container_for(parent_id)
+        for node in children.get(parent_id or "ROOT", []):
+            index = node_index.get(node.id, 1)
+            safe_title = sanitize_filename(node.title)
+            if node.type == "folder":
+                folder_paths[node.id] = parent_container / f"{pad(index)}-{safe_title}"
+                visit(node.id)
+            elif node.type == "document":
+                doc_paths[node.id] = parent_container / f"{pad(index)}-{safe_title}.md"
+                if children.get(node.id):
+                    folder_paths[node.id] = parent_container / f"{pad(index)}-{safe_title}"
+                    visit(node.id)
+
+    visit(None)
+    top_items = children.get("ROOT", [])
+    return folder_paths, doc_paths, children, top_items
 
 
 def document_target_path(
@@ -759,13 +785,33 @@ def document_target_path(
     by_id: dict[str, Node],
     children: dict[str, list[Node]],
     folder_paths: dict[str, Path],
+    planned_doc_paths: dict[str, Path],
     output: Path,
 ) -> Path:
-    folder_id = top_folder_for(doc, by_id, folder_paths)
-    target_dir = folder_paths.get(folder_id or "", output)
-    siblings = [n for n in children.get(doc.parent_id or "ROOT", []) if n.type == "document"]
-    doc_index = siblings.index(doc) + 1 if doc in siblings else index
-    return target_dir / f"{pad(doc_index)}-{sanitize_filename(doc.title)}.md"
+    return planned_doc_paths.get(doc.id) or output / f"{pad(index)}-{sanitize_filename(doc.title)}.md"
+
+
+def rewrite_internal_links(markdown: str, md_path: Path, doc_paths: dict[str, Path]) -> str:
+    pattern = re.compile(r"https://thoughts\.aliyun\.com/workspaces/([^/\s)]+)/docs/([0-9a-fA-F]+)")
+
+    def replace(match: re.Match[str]) -> str:
+        target = doc_paths.get(match.group(2))
+        if not target:
+            return match.group(0)
+        return os.path.relpath(target, md_path.parent).replace("\\", "/")
+
+    return pattern.sub(replace, markdown)
+
+
+def append_child_doc_links(markdown: str, doc: Node, children: dict[str, list[Node]], doc_paths: dict[str, Path], md_path: Path) -> str:
+    child_docs = [node for node in children.get(doc.id, []) if node.type == "document" and node.id in doc_paths]
+    if not child_docs:
+        return markdown
+    lines = ["", "## 子文档", ""]
+    for child in child_docs:
+        rel_path = os.path.relpath(doc_paths[child.id], md_path.parent).replace("\\", "/")
+        lines.append(f"- [{child.title}]({rel_path})")
+    return markdown.rstrip() + "\n\n" + "\n".join(lines) + "\n"
 
 
 def scan_exported_docs(output: Path) -> dict[str, Path]:
@@ -785,7 +831,7 @@ def scan_exported_docs(output: Path) -> dict[str, Path]:
 
 def write_index(
     output: Path,
-    top_folders: list[Node],
+    root_items: list[Node],
     children: dict[str, list[Node]],
     folder_paths: dict[str, Path],
     doc_paths: dict[str, Path] | None = None,
@@ -793,20 +839,29 @@ def write_index(
 ) -> None:
     index_path = output / "00-知识库入口.md"
     lines = ["# 阿里云 Thoughts 教学文档", "", "> 从阿里云 Thoughts 知识库导出。", ""]
-    for folder_index, folder in enumerate(top_folders, start=1):
-        docs = [
-            n
-            for n in children.get(folder.id, [])
-            if n.type == "document" and (not selected_doc_ids or n.id in selected_doc_ids)
-        ]
-        if not docs:
-            continue
-        lines.extend([f"## {pad(folder_index)} {folder.title}", ""])
-        for doc_index, doc in enumerate(docs, start=1):
-            doc_path = (doc_paths or {}).get(doc.id) or folder_paths[folder.id] / f"{pad(doc_index)}-{sanitize_filename(doc.title)}.md"
-            rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/")
-            lines.append(f"- [{doc.title}]({rel_path})")
-        lines.append("")
+
+    def has_selected_docs(node: Node) -> bool:
+        if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids):
+            return True
+        return any(has_selected_docs(child) for child in children.get(node.id, []))
+
+    def walk(items: list[Node], depth: int = 0) -> None:
+        for node in items:
+            if not has_selected_docs(node):
+                continue
+            indent = "  " * depth
+            if node.type == "document":
+                doc_path = (doc_paths or {}).get(node.id)
+                if not doc_path:
+                    continue
+                rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/")
+                lines.append(f"{indent}- [{node.title}]({rel_path})")
+                walk(children.get(node.id, []), depth + 1)
+            else:
+                lines.append(f"{indent}- **{node.title}**")
+                walk(children.get(node.id, []), depth + 1)
+
+    walk(root_items)
     index_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -866,7 +921,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
 
         nodes = load_tree(cdp, workspace_id, args)
         by_id = {node.id: node for node in nodes}
-        folder_paths, children, top_folders = build_paths(nodes, output)
+        folder_paths, planned_doc_paths, children, root_items = build_paths(nodes, output)
         for path in folder_paths.values():
             path.mkdir(parents=True, exist_ok=True)
 
@@ -887,7 +942,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 emit(args, "收到停止请求，正在结束并写入已完成的导出结果。")
                 break
 
-            md_path = document_target_path(doc, index, by_id, children, folder_paths, output)
+            md_path = document_target_path(doc, index, by_id, children, folder_paths, planned_doc_paths, output)
             doc_paths[doc.id] = existing_docs.get(doc.id, md_path)
 
             if args.incremental and doc.id in existing_docs and not args.update_existing:
@@ -900,6 +955,8 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 if not markdown.startswith("#"):
                     markdown = f"# {doc.title}\n\n{markdown}"
                 markdown = re.sub(r"^#\s+[^\n]+", f"# {doc.title}", markdown, count=1)
+                markdown = rewrite_internal_links(markdown, md_path, {**planned_doc_paths, **doc_paths})
+                markdown = append_child_doc_links(markdown, doc, children, {**planned_doc_paths, **doc_paths}, md_path)
                 markdown += f"\n---\n\n来源: https://thoughts.aliyun.com/workspaces/{workspace_id}/docs/{doc.id}\n"
                 markdown, count, img_errors = localize_images(
                     markdown,
@@ -929,7 +986,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                     f"image_success={image_success} failures={len(failures)}",
                 )
 
-        write_index(output, top_folders, children, folder_paths, doc_paths, selected_doc_ids or None)
+        write_index(output, root_items, children, folder_paths, doc_paths, selected_doc_ids or None)
         report = {
             "workspaceId": workspace_id,
             "workspaceUrl": workspace_url,

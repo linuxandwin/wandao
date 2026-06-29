@@ -13,6 +13,7 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-bundled%20in%20release-blue" alt="Python"></a>
   <a href="#系统要求"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform"></a>
   <a href="https://github.com/tllovesxs/wandao"><img src="https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black" alt="GitHub"></a>
+  <a href="https://gitee.com/shi-xiansong/wandao"><img src="https://img.shields.io/badge/Gitee-shi--xiansong%2Fwandao-red" alt="Gitee"></a>
 </p>
 
 万能导是一个多平台(目前已支持飞书,语雀,阿里云,印象笔记,知识星球,ima,本地md)知识库 Markdown 导入导出工具。你可以把自己有权限访问的项目资料、团队知识库、课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台中。
@@ -26,8 +27,9 @@ Author: `tllovesxs`
 | 项目 | 内容 |
 |------|------|
 | GitHub | [tllovesxs/wandao](https://github.com/tllovesxs/wandao) |
-| 发行版下载 | [Releases](https://github.com/tllovesxs/wandao/releases) |
-| 问题反馈 | [Issues](https://github.com/tllovesxs/wandao/issues) |
+| Gitee | [shi-xiansong/wandao](https://gitee.com/shi-xiansong/wandao) |
+| 发行版下载 | [GitHub Releases](https://github.com/tllovesxs/wandao/releases) |
+| 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
 | 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
 | 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
 | 作者微信 | `pressure_spring` |
@@ -74,16 +76,16 @@ Author: `tllovesxs`
 - 夜间模式和更新检查：桌面端支持主题切换和新版本提示。
 
 ## 快速开始
-<img width="2193" height="788" alt="image" src="https://github.com/user-attachments/assets/b32d02e5-7357-4dad-9443-087503d2aafa" />
+
 ### 普通用户
 
-1. 打开 [Releases](https://github.com/tllovesxs/wandao/releases)。
+1. 打开 [GitHub Releases](https://github.com/tllovesxs/wandao/releases)。
 2. 下载对应系统的发行版。
 3. 安装或解压后打开 `Wandao`。
 4. 在左侧选择要使用的平台。
 5. 按界面提示填写链接、登录、读取目录、选择范围并执行任务。
 
-> **macOS 用户注意**：从 GitHub 下载的应用会被 macOS 标记隔离属性，首次打开可能提示“已损坏，无法打开”。这不是应用本身的问题，而是系统为了防止未签名应用运行所做的拦截。请在终端执行以下命令后再打开，路径需要替换为 `Wandao.app` 实际所在位置：
+> **macOS 用户注意**：从 GitHub 或 Gitee 下载的应用可能会被 macOS 标记隔离属性，首次打开可能提示“已损坏，无法打开”。这不是应用本身的问题，而是系统为了防止未签名应用运行所做的拦截。请在终端执行以下命令后再打开，路径需要替换为 `Wandao.app` 实际所在位置：
 >
 > ```bash
 > xattr -cr /Applications/Wandao.app
@@ -102,6 +104,13 @@ python -m pip install -r requirements.txt
 cd wandao_electron
 npm install
 npm start
+```
+
+国内网络环境也可以使用 Gitee 镜像：
+
+```powershell
+git clone https://gitee.com/shi-xiansong/wandao.git
+cd wandao
 ```
 
 macOS/Linux 将虚拟环境激活命令换成：

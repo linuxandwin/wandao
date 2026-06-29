@@ -116,34 +116,56 @@ def open_tab(port: int, url: str) -> None:
         urllib.request.urlopen(request, timeout=5).close()
 
 
-def normalize_wiki_url(wiki_url: str) -> str:
-    parsed = urllib.parse.urlparse(wiki_url.strip())
+FEISHU_DOC_PATH_TYPES = {"doc", "docs", "docx"}
+
+
+def parse_feishu_entry_url(entry_url: str) -> tuple[str, str, str, str, str]:
+    parsed = urllib.parse.urlparse(entry_url.strip())
     if not parsed.scheme or not parsed.netloc:
-        raise ExportError("请填写完整的飞书 Wiki URL")
+        raise ExportError("请填写完整的飞书 URL")
     parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) < 2 or parts[0] != "wiki":
+    if len(parts) >= 3 and parts[0] == "drive" and parts[1] == "folder":
+        normalized = f"{parsed.scheme}://{parsed.netloc}/drive/folder/{parts[2]}"
+        return parsed.netloc, f"{parsed.scheme}://{parsed.netloc}", parts[2], normalized, "drive_folder"
+    if len(parts) < 2 or parts[0] not in {"wiki", *FEISHU_DOC_PATH_TYPES}:
+        raise ExportError(
+            "飞书 URL 需要形如 https://xxx.feishu.cn/wiki/<token>、/docx/<token> 或 /drive/folder/<token>"
+        )
+    kind = "wiki" if parts[0] == "wiki" else "document"
+    normalized = f"{parsed.scheme}://{parsed.netloc}/{parts[0]}/{parts[1]}"
+    return parsed.netloc, f"{parsed.scheme}://{parsed.netloc}", parts[1], normalized, kind
+
+
+def normalize_wiki_url(wiki_url: str) -> str:
+    _host, _origin, _token, normalized, kind = parse_feishu_entry_url(wiki_url)
+    if kind != "wiki":
         raise ExportError("飞书 Wiki URL 需要形如 https://xxx.feishu.cn/wiki/<wiki_token>")
-    return f"{parsed.scheme}://{parsed.netloc}/wiki/{parts[1]}"
+    return normalized
 
 
 def parse_wiki_url(wiki_url: str) -> tuple[str, str, str, str]:
-    normalized = normalize_wiki_url(wiki_url)
-    parsed = urllib.parse.urlparse(normalized)
-    token = [part for part in parsed.path.split("/") if part][1]
-    return parsed.netloc, f"{parsed.scheme}://{parsed.netloc}", token, normalized
+    host, origin, token, normalized, kind = parse_feishu_entry_url(wiki_url)
+    if kind != "wiki":
+        raise ExportError("飞书 Wiki URL 需要形如 https://xxx.feishu.cn/wiki/<wiki_token>")
+    return host, origin, token, normalized
 
 
-def page_for_wiki(port: int, host: str, wiki_token: str) -> dict[str, Any] | None:
+def page_for_entry(port: int, host: str, normalized_url: str) -> dict[str, Any] | None:
     pages = http_json(f"http://127.0.0.1:{port}/json/list", timeout=5)
-    token_needle = f"{host}/wiki/{wiki_token}"
-    host_needle = f"{host}/wiki/"
+    parsed = urllib.parse.urlparse(normalized_url)
+    entry_needle = f"{host}{parsed.path}"
+    host_needle = f"{host}/"
     for page in pages:
-        if page.get("type") == "page" and token_needle in page.get("url", ""):
+        if page.get("type") == "page" and entry_needle in page.get("url", ""):
             return page
     for page in pages:
         if page.get("type") == "page" and host_needle in page.get("url", ""):
             return page
     return None
+
+
+def page_for_wiki(port: int, host: str, wiki_token: str) -> dict[str, Any] | None:
+    return page_for_entry(port, host, f"https://{host}/wiki/{wiki_token}")
 
 
 def connect_wiki_browser(
@@ -165,6 +187,32 @@ def connect_wiki_browser(
         page = page_for_wiki(args.port, host, wiki_token)
     if not page:
         raise ExportError("Could not find or create a Feishu Wiki page in Chrome.")
+
+    cdp = CDPClient(page["webSocketDebuggerUrl"])
+    cdp.connect()
+    cdp.send("Runtime.enable")
+    cdp.send("Page.enable")
+    return cdp, chrome_proc
+
+
+def connect_entry_browser(
+    args: argparse.Namespace,
+    entry_url: str,
+    host: str,
+) -> tuple[CDPClient, subprocess.Popen[Any] | None]:
+    chrome_proc: subprocess.Popen[Any] | None = None
+    if not chrome_debug_available(args.port):
+        profile = Path(args.profile_dir).resolve() if args.profile_dir else default_profile_path()
+        chrome_proc = start_chrome(args.port, profile, entry_url, getattr(args, "browser_path", None))
+        wait_for_debug_port(args.port, timeout=30)
+
+    page = page_for_entry(args.port, host, entry_url)
+    if not page:
+        open_tab(args.port, entry_url)
+        time.sleep(4)
+        page = page_for_entry(args.port, host, entry_url)
+    if not page:
+        raise ExportError("Could not find or create a Feishu page in Chrome.")
 
     cdp = CDPClient(page["webSocketDebuggerUrl"])
     cdp.connect()
@@ -315,6 +363,106 @@ async (startToken) => {
 """
 
 
+FEISHU_DRIVE_FOLDER_LOADER_JS = r"""
+async (startToken) => {
+  function assertOk(json, url) {
+    if (!json || (json.code !== 0 && json.code !== undefined)) {
+      throw new Error("Feishu Drive API failed: " + url + " " + JSON.stringify(json && {code: json.code, msg: json.msg || json.message}));
+    }
+    return json;
+  }
+  async function getJson(url) {
+    const res = await fetch(url, {credentials: "include"});
+    const json = await res.json();
+    return assertOk(json, url);
+  }
+  function normalizeNode(raw, parentToken, sortId) {
+    const token = raw.token || raw.node_token || raw.obj_token || "";
+    const type = raw.type;
+    return {
+      wiki_token: token,
+      parent_wiki_token: parentToken || "",
+      title: raw.name || raw.title || "未命名",
+      obj_token: raw.obj_token || token,
+      obj_type: type,
+      has_child: type === 0,
+      sort_id: sortId || raw.sort_id || raw.edit_time || raw.create_time || 0,
+      url: raw.url || (type === 0 ? `${location.origin}/drive/folder/${token}` : ""),
+      wiki_node_type: 0,
+      drive_node_type: raw.node_type || 0,
+    };
+  }
+  const nodes = {};
+  const childMap = {};
+  const seen = new Set();
+
+  async function folderName(token) {
+    try {
+      const pathJson = await getJson(`/space/api/explorer/v2/obj/path/?obj_token=${encodeURIComponent(token)}&obj_type=0&need_path=true`);
+      const entity = pathJson && pathJson.data && pathJson.data.entities && pathJson.data.entities.nodes && pathJson.data.entities.nodes[token];
+      if (entity) return entity.name || entity.title || "飞书云空间文件夹";
+    } catch (_) {}
+    return "飞书云空间文件夹";
+  }
+
+  async function loadFolder(token, parentToken, sortId) {
+    if (!token || seen.has(token)) return;
+    seen.add(token);
+    if (!nodes[token]) {
+      nodes[token] = {
+        wiki_token: token,
+        parent_wiki_token: parentToken || "",
+        title: await folderName(token),
+        obj_token: token,
+        obj_type: 0,
+        has_child: true,
+        sort_id: sortId || 0,
+        url: `${location.origin}/drive/folder/${token}`,
+        wiki_node_type: 0,
+        drive_node_type: 0,
+      };
+    }
+    const children = [];
+    let lastLabel = "";
+    let page = 0;
+    while (page < 100) {
+      const url = `/space/api/explorer/v3/children/list/?thumbnail_width=1028&thumbnail_height=1028&thumbnail_policy=4&obj_type=0&obj_type=2&obj_type=22&obj_type=44&obj_type=3&obj_type=30&obj_type=8&obj_type=11&obj_type=12&obj_type=84&obj_type=123&obj_type=124&length=50&asc=1&rank=5&token=${encodeURIComponent(token)}${lastLabel ? `&last_label=${encodeURIComponent(lastLabel)}` : ""}&interflow_filter=CLIENT_VARS`;
+      const json = await getJson(url);
+      const data = json.data || {};
+      const rawNodes = data.entities && data.entities.nodes || {};
+      for (const childToken of data.node_list || []) {
+        const raw = rawNodes[childToken];
+        if (!raw) continue;
+        const child = normalizeNode(raw, token, children.length + 1);
+        if (!child.wiki_token) continue;
+        nodes[child.wiki_token] = child;
+        children.push(child.wiki_token);
+      }
+      if (!data.has_more) break;
+      lastLabel = data.last_label || "";
+      if (!lastLabel) break;
+      page += 1;
+    }
+    childMap[token] = children;
+    for (const childToken of children) {
+      const child = nodes[childToken];
+      if (child && child.obj_type === 0) await loadFolder(childToken, token, child.sort_id);
+    }
+  }
+
+  await loadFolder(startToken, "", 1);
+  return {
+    spaceId: "",
+    space: {space_name: nodes[startToken] && nodes[startToken].title || "飞书云空间文件夹"},
+    rootList: [startToken],
+    childMap,
+    nodes,
+    entryKind: "drive_folder",
+  };
+}
+"""
+
+
 def load_wiki_tree(
     cdp: CDPClient,
     wiki_url: str,
@@ -327,6 +475,21 @@ def load_wiki_tree(
     value = cdp.evaluate(f"({FEISHU_TREE_LOADER_JS})({js_string(start_token)})", timeout=120)
     if not isinstance(value, dict) or not value.get("nodes"):
         raise ExportError("Failed to load Feishu Wiki tree")
+    return value
+
+
+def load_drive_folder_tree(
+    cdp: CDPClient,
+    folder_url: str,
+    start_token: str,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    throttle_request(args)
+    cdp.navigate(folder_url)
+    wait_for_wiki_ready(cdp, timeout=30, args=args)
+    value = cdp.evaluate(f"({FEISHU_DRIVE_FOLDER_LOADER_JS})({js_string(start_token)})", timeout=180)
+    if not isinstance(value, dict) or not value.get("nodes"):
+        raise ExportError("Failed to load Feishu Drive folder tree")
     return value
 
 
@@ -680,7 +843,7 @@ def build_doc_paths(ordered: list[dict[str, Any]], tree: dict[str, Any], output:
     doc_paths: dict[str, Path] = {}
     for fallback_index, item in enumerate(ordered, start=1):
         token = item.get("wiki_token")
-        if not token or not item.get("url"):
+        if not token or not item.get("url") or item.get("obj_type") == 0:
             continue
         parent_token = item.get("parent_wiki_token") or "ROOT"
         if parent_token in root_parents:
@@ -695,7 +858,7 @@ def scan_exported_docs(output: Path) -> dict[str, Path]:
     exported: dict[str, Path] = {}
     if not output.exists():
         return exported
-    pattern = re.compile(r"飞书WikiToken:\s*([A-Za-z0-9]+)")
+    pattern = re.compile(r"飞书(?:Wiki|Doc|Drive)Token:\s*([A-Za-z0-9]+)")
     for md_file in output.rglob("*.md"):
         try:
             text = md_file.read_text(encoding="utf-8", errors="ignore")
@@ -725,14 +888,89 @@ def write_index(
             continue
         indent = "  " * max(0, int(item.get("level") or 0))
         doc_path = doc_paths.get(token)
-        rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/") if doc_path else ""
         label = item.get("title") or "未命名"
-        lines.append(f"{indent}- [{label}]({rel_path})")
+        if doc_path and item.get("obj_type") != 0:
+            rel_path = os.path.relpath(doc_path, index_path.parent).replace("\\", "/")
+            lines.append(f"{indent}- [{label}]({rel_path})")
+        else:
+            lines.append(f"{indent}- **{label}**")
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
-    host, _origin, start_token, wiki_url = parse_wiki_url(args.wiki_url)
+    host, origin, start_token, entry_url, kind = parse_feishu_entry_url(args.wiki_url)
+    if kind == "drive_folder":
+        cdp, chrome_proc = connect_entry_browser(args, entry_url, host)
+        try:
+            auth_file = auth_path_from_args(args)
+            if auth_file.exists() and not args.skip_auth_load:
+                cookie_count = load_auth_state(cdp, auth_file)
+                emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
+                cdp.navigate(entry_url)
+                time.sleep(2)
+            emit(args, "开始读取飞书云空间文件夹目录。")
+            tree = load_drive_folder_tree(cdp, entry_url, start_token, args)
+            ordered = order_tree(tree)
+            return {
+                "tree": tree,
+                "ordered": ordered,
+                "totalDocs": sum(1 for item in ordered if item.get("url") and item.get("obj_type") == 22),
+                "entryKind": "drive_folder",
+            }
+        finally:
+            cdp.close()
+            if chrome_proc and args.close_started_chrome:
+                chrome_proc.terminate()
+
+    if kind != "wiki":
+        cdp, chrome_proc = connect_entry_browser(args, entry_url, host)
+        try:
+            auth_file = auth_path_from_args(args)
+            if auth_file.exists() and not args.skip_auth_load:
+                cookie_count = load_auth_state(cdp, auth_file)
+                emit(args, f"Loaded {cookie_count} auth cookies from {auth_file}")
+                cdp.navigate(entry_url)
+                time.sleep(2)
+            wait_for_doc_ready(cdp, timeout=35, args=args)
+            result = fetch_doc_markdown(
+                cdp,
+                {
+                    "wiki_token": start_token,
+                    "title": "飞书云文档",
+                    "url": entry_url,
+                    "obj_type": 22,
+                    "parent_wiki_token": "",
+                    "sort_id": 1,
+                },
+                args,
+            )
+            node = {
+                "wiki_token": start_token,
+                "parent_wiki_token": "",
+                "title": result.get("title") or "飞书云文档",
+                "obj_token": start_token,
+                "obj_type": 22,
+                "has_child": False,
+                "sort_id": 1,
+                "url": entry_url,
+                "wiki_node_type": 0,
+                "level": 0,
+                "entry_kind": "document",
+            }
+            tree = {
+                "spaceId": "",
+                "space": {"space_name": result.get("title") or "飞书云文档"},
+                "rootList": [start_token],
+                "childMap": {},
+                "nodes": {start_token: node},
+            }
+            return {"tree": tree, "ordered": [node], "totalDocs": 1, "entryKind": "document"}
+        finally:
+            cdp.close()
+            if chrome_proc and args.close_started_chrome:
+                chrome_proc.terminate()
+
+    wiki_url = entry_url
     cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, start_token)
     try:
         auth_file = auth_path_from_args(args)
@@ -756,10 +994,14 @@ def scan_wiki_toc(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
-    host, origin, start_token, wiki_url = parse_wiki_url(args.wiki_url)
+    host, origin, start_token, wiki_url, entry_kind = parse_feishu_entry_url(args.wiki_url)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, start_token)
+    cdp, chrome_proc = (
+        connect_wiki_browser(args, wiki_url, host, start_token)
+        if entry_kind == "wiki"
+        else connect_entry_browser(args, wiki_url, host)
+    )
     try:
         auth_file = auth_path_from_args(args)
         if auth_file.exists() and not args.skip_auth_load:
@@ -772,8 +1014,47 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         if args.wait_login:
             input("Press Enter after the Feishu Wiki page is logged in and visible...")
 
-        tree = load_wiki_tree(cdp, wiki_url, start_token, args)
-        ordered = order_tree(tree)
+        if entry_kind == "wiki":
+            tree = load_wiki_tree(cdp, wiki_url, start_token, args)
+            ordered = order_tree(tree)
+        elif entry_kind == "drive_folder":
+            tree = load_drive_folder_tree(cdp, wiki_url, start_token, args)
+            ordered = order_tree(tree)
+        else:
+            wait_for_doc_ready(cdp, timeout=35, args=args)
+            probe = fetch_doc_markdown(
+                cdp,
+                {
+                    "wiki_token": start_token,
+                    "title": "飞书云文档",
+                    "url": wiki_url,
+                    "obj_type": 22,
+                    "parent_wiki_token": "",
+                    "sort_id": 1,
+                },
+                args,
+            )
+            node = {
+                "wiki_token": start_token,
+                "parent_wiki_token": "",
+                "title": probe.get("title") or "飞书云文档",
+                "obj_token": start_token,
+                "obj_type": 22,
+                "has_child": False,
+                "sort_id": 1,
+                "url": wiki_url,
+                "wiki_node_type": 0,
+                "level": 0,
+                "entry_kind": "document",
+            }
+            tree = {
+                "spaceId": "",
+                "space": {"space_name": probe.get("title") or "飞书云文档"},
+                "rootList": [start_token],
+                "childMap": {},
+                "nodes": {start_token: node},
+            }
+            ordered = [node]
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
         docs = [item for item in ordered if item.get("url") and item.get("obj_type") == 22]
         if not docs:
@@ -807,7 +1088,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 markdown = result.get("markdown") or f"# {doc.get('title') or '未命名'}\n"
                 markdown += (
                     f"\n---\n\n来源: {doc.get('url') or origin + '/wiki/' + token}\n"
-                    f"飞书WikiToken: {token}\n"
+                    f"飞书{'Wiki' if entry_kind == 'wiki' else ('Drive' if entry_kind == 'drive_folder' else 'Doc')}Token: {token}\n"
                     f"飞书ObjToken: {doc.get('obj_token') or ''}\n"
                     f"飞书ObjType: {doc.get('obj_type')}\n"
                 )
@@ -843,6 +1124,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         write_index(output, tree, ordered, doc_paths, selected_doc_ids or None)
         report = {
             "provider": "feishu",
+            "entryKind": entry_kind,
             "mode": "incremental" if args.incremental else "full",
             "space": tree.get("space") or {},
             "spaceId": tree.get("spaceId"),
@@ -872,9 +1154,13 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], None] | None = None) -> dict[str, Any]:
-    host, _origin, start_token, wiki_url = parse_wiki_url(args.wiki_url)
+    host, _origin, start_token, entry_url, entry_kind = parse_feishu_entry_url(args.wiki_url)
     auth_file = auth_path_from_args(args)
-    cdp, chrome_proc = connect_wiki_browser(args, wiki_url, host, start_token)
+    cdp, chrome_proc = (
+        connect_wiki_browser(args, entry_url, host, start_token)
+        if entry_kind == "wiki"
+        else connect_entry_browser(args, entry_url, host)
+    )
     try:
         emit(args, "Chrome opened. Log in to Feishu in the browser.")
         if wait_callback:
@@ -887,12 +1173,12 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
                 check_stopped(args)
                 time.sleep(1)
         else:
-            input("After login is complete and the Feishu Wiki page is visible, press Enter...")
+            input("After login is complete and the Feishu page is visible, press Enter...")
         check_stopped(args)
-        cdp.navigate(wiki_url)
+        cdp.navigate(entry_url)
         time.sleep(2)
         check_stopped(args)
-        result = save_auth_state(cdp, auth_file, wiki_url, host)
+        result = save_auth_state(cdp, auth_file, entry_url, host)
         emit(args, f"Saved {result['cookieCount']} auth cookies to {auth_file}")
         return result
     finally:

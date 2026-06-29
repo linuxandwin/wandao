@@ -18,10 +18,6 @@ jobs:
             os: windows-latest
             command: npm run build:win
             artifact: wandao-Windows-x64
-          - name: macOS Intel
-            os: macos-13
-            command: npm run build:mac:x64
-            artifact: wandao-macOS-x64
           - name: macOS Apple-Silicon
             os: macos-14
             command: npm run build:mac:arm64

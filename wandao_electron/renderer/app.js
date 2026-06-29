@@ -1286,7 +1286,7 @@ function normalizeTocNodes(toolId, data) {
         exportId: token,
         title: item.title || '未命名',
         parentNodeId: item.parent_wiki_token ? `feishu:${item.parent_wiki_token}` : '',
-        selectable: Boolean(item.url)
+        selectable: Boolean(item.url) && Number(item.obj_type ?? 22) !== 0
       });
     });
     return nodes;
