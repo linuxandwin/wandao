@@ -16,6 +16,15 @@
   <a href="https://gitee.com/shi-xiansong/wandao"><img src="https://img.shields.io/badge/Gitee-shi--xiansong%2Fwandao-red" alt="Gitee"></a>
 </p>
 
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/windows.svg" alt="Windows" title="Windows" width="24">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/apple.svg" alt="macOS" title="macOS" width="24">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/linux.svg" alt="Linux" title="Linux" width="24">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/python.svg" alt="Python" title="Python" width="24">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/markdown.svg" alt="Markdown" title="Markdown" width="24">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" title="印象笔记 / Evernote" width="24">
+</p>
+
 万能导是一个多平台(目前已支持飞书,语雀,阿里云,印象笔记,知识星球,ima,本地md)知识库 Markdown 导入导出工具。你可以把自己有权限访问的项目资料、团队知识库、课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台中。
 
 它适合用来做知识备份、平台迁移、项目学习资料整理，以及把“教学文档 + 源码项目”放在一起交给 AI 阅读。
@@ -26,7 +35,7 @@ Author: `tllovesxs`
 
 | 项目 | 内容 |
 |------|------|
-| GitHub | [tllovesxs/wandao](https://github.com/tllovesxs/wandao) |
+| <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/github.svg" alt="GitHub" width="16"> GitHub | [tllovesxs/wandao](https://github.com/tllovesxs/wandao) |
 | Gitee | [shi-xiansong/wandao](https://gitee.com/shi-xiansong/wandao) |
 | 发行版下载 | [GitHub Releases](https://github.com/tllovesxs/wandao/releases) |
 | 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
@@ -51,7 +60,7 @@ Author: `tllovesxs`
 | 语雀 | 支持任意知识库导出，并尽量本地化正文图片和附件 |
 | 飞书 Wiki | 支持 Wiki 知识库导出为 Markdown |
 | 阿里云 Thoughts | 支持工作区文档导出为 Markdown |
-| 印象笔记 | 支持同步后按笔记本导出 Markdown |
+| <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" width="16"> 印象笔记 | 支持同步后按笔记本导出 Markdown |
 | ima 知识库 | 支持读取知识库目录树，按知识库、文件夹或文件勾选导出 |
 
 ### 导入到平台
@@ -60,7 +69,7 @@ Author: `tllovesxs`
 |------|------|
 | 飞书 Wiki | 支持本地 Markdown 批量导入，并恢复多层目录结构 |
 | 语雀 | 支持本地 Markdown 创建或更新到语雀知识库，上传图片和附件 |
-| 印象笔记 | 支持本地 Markdown 批量导入，并上传本地图片和附件 |
+| <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" width="16"> 印象笔记 | 支持本地 Markdown 批量导入，并上传本地图片和附件 |
 | ima 知识库 | 支持本地文件上传到知识库根目录或已有文件夹 |
 
 ## 主要特性
@@ -155,7 +164,7 @@ source .venv/bin/activate
 
 | 依赖 | 要求 |
 |------|------|
-| Python | 发行版已内置；源码运行需要 Python 3.10+ |
+| <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/python.svg" alt="Python" width="16"> Python | 发行版已内置；源码运行需要 Python 3.10+ |
 | Node.js | 仅源码运行桌面端、参与开发或本地打包时需要 |
 | 浏览器 | Chrome、Edge 或 Chromium，浏览器类平台登录时使用 |
 | 权限 | 需要拥有目标内容的正常访问权限 |
