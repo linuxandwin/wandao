@@ -123,23 +123,16 @@ npm install
 npm start
 ```
 
-如果 `npm install` 长时间不动，通常是 Electron 下载地址访问慢。可以按 `Ctrl + C` 停止后，在 `wandao_electron` 目录执行国内镜像安装：
-
-```powershell
-npm run install:cn
-```
-
-如果仍然失败，再执行：
-
-```powershell
-npm cache clean --force
-npm run install:cn
-```
-
-项目已在 `wandao_electron/.npmrc` 内配置 npm 国内镜像，`npm run install:cn` 会额外使用 Electron 国内镜像。
+如果看到 `npm verbose audit error ... unable to get local issuer certificate`，一般只是 npm 安全审计接口的证书问题，不代表依赖安装失败。项目已默认关闭 `audit` 和 `fund`，重新执行 `npm install` 即可。
 
 <details>
-<summary>可选：使用虚拟环境、Gitee 镜像或 macOS/Linux</summary>
+<summary>可选：网络慢、虚拟环境、Gitee 镜像或 macOS/Linux</summary>
+
+如果 `npm install` 长时间不动，通常是 Electron 下载地址访问慢。可以按 `Ctrl + C` 停止后，在 `wandao_electron` 目录执行：
+
+```powershell
+npm run install:cn
+```
 
 如果你希望 Python 依赖不污染系统环境，可以先创建虚拟环境：
 

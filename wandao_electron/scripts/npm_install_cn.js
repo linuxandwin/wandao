@@ -12,6 +12,8 @@ const env = {
 const result = spawnSync(npmCommand, [
   'install',
   '--registry=https://registry.npmmirror.com/',
+  '--no-audit',
+  '--no-fund',
   '--verbose'
 ], {
   stdio: 'inherit',
