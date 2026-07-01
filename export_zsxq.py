@@ -344,6 +344,37 @@ ZSXQ_CONVERTER_JS = r"""
     const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
     return !!style && (style.display === "none" || style.visibility === "hidden");
   }
+  const codeLanguages = [
+    "typescript", "javascript", "markdown", "plaintext", "objectivec",
+    "csharp", "python", "shell", "bash", "json", "html", "java",
+    "rust", "ruby", "yaml", "yml", "css", "xml", "sql", "php",
+    "cpp", "go", "c", "text"
+  ];
+  function isCodeToolbarText(text) {
+    const compacted = clean(text).replace(/\s+/g, "").toLowerCase();
+    if (!compacted.endsWith("copy")) return false;
+    let rest = compacted.slice(0, -4);
+    if (rest.length < 12 || rest.length > 240) return false;
+    let hits = 0;
+    while (rest) {
+      const lang = codeLanguages.find(item => rest.startsWith(item));
+      if (!lang) return false;
+      rest = rest.slice(lang.length);
+      hits += 1;
+    }
+    return hits >= 3;
+  }
+  function stripCodeToolbarText(text) {
+    const lines = (text || "").replace(/\r\n?/g, "\n").split("\n");
+    return lines.filter(line => !isCodeToolbarText(line)).join("\n").replace(/\n$/, "");
+  }
+  function codeBlockText(el) {
+    const candidates = [...el.querySelectorAll("code, textarea")]
+      .map(node => node.innerText || node.textContent || "")
+      .filter(text => clean(text) && !isCodeToolbarText(text));
+    const text = candidates.sort((a, b) => b.length - a.length)[0] || el.innerText || el.textContent || "";
+    return stripCodeToolbarText(text);
+  }
   function inline(node) {
     if (!node) return "";
     if (node.nodeType === 3) return node.nodeValue.replace(/[\u200b\u200c\u200d\ufeff]/g, "");
@@ -383,10 +414,11 @@ ZSXQ_CONVERTER_JS = r"""
     if (hidden(el)) return "";
     const tag = el.tagName.toLowerCase();
     if (["script", "style", "meta", "button"].includes(tag)) return "";
+    if (isCodeToolbarText(el.innerText || el.textContent || "")) return "";
     if (el.classList && (el.classList.contains("comment-container") || el.classList.contains("comment-item"))) return "";
     if (/^h[1-6]$/.test(tag)) return "#".repeat(+tag[1] + 1) + " " + clean(inline(el));
     if (tag === "p") return clean(inline(el));
-    if (tag === "pre") return "```\n" + (el.innerText || "").replace(/\n$/, "") + "\n```";
+    if (tag === "pre") return "```\n" + codeBlockText(el) + "\n```";
     if (tag === "blockquote") return clean(el.innerText).split("\n").map(x => "> " + x).join("\n");
     if (tag === "ul" || tag === "ol") {
       const items = [...el.children].flatMap(child => {
@@ -1605,7 +1637,78 @@ def mark_link_seen(link: dict[str, str], seen_urls: set[str]) -> None:
     seen_urls.update(canonical_url_keys(link.get("href")))
 
 
+CODE_TOOLBAR_LANGS = [
+    "typescript",
+    "javascript",
+    "markdown",
+    "plaintext",
+    "objectivec",
+    "csharp",
+    "python",
+    "shell",
+    "bash",
+    "json",
+    "html",
+    "java",
+    "rust",
+    "ruby",
+    "yaml",
+    "yml",
+    "css",
+    "xml",
+    "sql",
+    "php",
+    "cpp",
+    "go",
+    "c",
+    "text",
+]
+
+
+def is_code_toolbar_line(line: str) -> bool:
+    compacted = re.sub(r"\s+", "", html.unescape(line or "").strip().lower())
+    if not compacted.endswith("copy"):
+        return False
+    rest = compacted[:-4]
+    if len(rest) < 12 or len(rest) > 240:
+        return False
+    hits = 0
+    while rest:
+        matched = ""
+        for lang in CODE_TOOLBAR_LANGS:
+            if rest.startswith(lang):
+                matched = lang
+                break
+        if not matched:
+            return False
+        rest = rest[len(matched) :]
+        hits += 1
+    return hits >= 3
+
+
+def strip_code_toolbar_lines(markdown: str) -> str:
+    lines = (markdown or "").splitlines()
+    result: list[str] = []
+    in_fence = False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            result.append(line)
+            continue
+        if is_code_toolbar_line(line):
+            next_index = index + 1
+            while next_index < len(lines) and not lines[next_index].strip():
+                next_index += 1
+            before_fence = next_index < len(lines) and lines[next_index].lstrip().startswith("```")
+            if in_fence or before_fence:
+                continue
+        result.append(line)
+    suffix = "\n" if markdown.endswith("\n") else ""
+    return "\n".join(result) + suffix
+
+
 def append_source_meta(markdown: str, item: dict[str, Any]) -> str:
+    markdown = strip_code_toolbar_lines(markdown or "")
     return (
         markdown
         + "\n---\n\n"
@@ -1879,6 +1982,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     + (f"知识星球评论数: {entry.get('commentCount')}\n" if "commentCount" in entry else "")
                 )
+                markdown = strip_code_toolbar_lines(markdown)
                 markdown, count, img_errors = localize_images(
                     markdown,
                     entry.get("images") or [],
