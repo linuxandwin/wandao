@@ -1,48 +1,50 @@
-# Wandao 1.1.1 Release Notes
+# Wandao 1.1.2 Release Notes
 
 ## 新增
 
-- 新增 ima 知识库导出：支持读取 ima 知识库目录树，并按知识库、文件夹或文件勾选导出到本地。
-- 新增 ima 知识库导入：支持将本地 Markdown、PDF、Word、PPT、Excel、图片、TXT、Xmind、音频等文件上传到 ima 知识库。
-- 桌面端左侧“导出 / 导入”分组新增 ima 知识库入口。
-- ima 导入新增目标文件夹选择：用户可以先读取目标知识库已有文件夹，再从下拉框选择上传位置。
+- 新增 provider 平台配置结构：平台入口、脚本、默认目录、能力声明逐步从 UI 代码中抽离，后续新增平台更容易维护。
+- 新增“任务历史”：导入导出任务会保存最近记录，可查看完成、失败、停止状态。
+- 新增“继续/重试”任务：可按历史命令重新执行未完成任务，配合各平台增量能力补齐缺失内容。
+- 新增单次任务报告：可复制某一次任务的统计、错误、失败项、返回数据和本任务详细日志。
+- 新增日志视图切换：日志区右上角可在“用户日志”和“详细日志”之间切换。
+- 新增“提交错误报告给开发者”：自动复制脱敏后的完整日志，便于反馈问题。
 
 ## 改进
 
-- 修复知识星球多层文章目录导出：`articles.zsxq.com` 目录文章会先保存当前页，再继续导出页面内的子文章链接，避免把目录文章误判为跳转页。
-- 优化知识星球目录项导出：目录帖子内嵌文章时会直接下钻到真正文章页，减少中间壳文件对 URL 深度的消耗。
-- 知识星球导出会从正文 Markdown 再补扫一次链接，降低页面转换过程中漏掉深层链接的概率。
-- 飞书导出补充云文档和云空间文件夹入口支持，可导出普通云文档、云空间文件夹及其层级内容。
-- 阿里云 Thoughts 导出保留多级子文档目录，并尽量把文档间引用改写为本地相对链接。
-- ima 导入默认跳过 Markdown 正文引用到的本地图片和附件，避免配图被重复当成独立知识库文件上传。
-- ima 导入支持扫描本地目录并统计待上传文件，单文件测试通过后再批量上传。
-- README 重新整理为更简洁的项目首页结构，补充 Gitee 镜像入口，突出支持平台、快速开始、常用流程和合规说明。
-- 版本号统一升级到 `1.1.1`，用于这次新增 ima 知识库导入导出能力，并包含知识星球多层目录和 macOS 打包修复。
+- 普通用户日志更清晰：错误会按未登录、无权限、限流、页面结构变化、图片附件失败、API 权限不足、本地路径问题等分类提示。
+- Python 原始输出、JSON、错误堆栈不再直接刷到用户日志，而是进入详细日志和错误报告。
+- 桌面端左侧平台入口改为 provider 自动生成，减少平台越来越多后 UI 维护压力。
+- 帮助菜单新增“新手模式 / 使用教程”，可直接打开项目使用文档。
+- README 快速开始重新简化：普通用户优先下载发行版，源码启动命令更短。
+- 新增 `npm run install:cn`：当 `npm install` 下载 Electron 卡住时，可使用国内镜像安装。
+- 新增 `wandao_electron/.npmrc`，为源码开发提供 npm 国内镜像和重试参数。
+- 新增 `docs/Provider接入说明.md`，说明后续平台 provider 接入方式。
 
 ## 当前限制
 
-- ima OpenAPI 当前未提供明确的“创建知识库文件夹”接口，所以导入可以写入知识库根目录或已有文件夹，暂不能自动把本地多级目录完整重建到 ima。
-- ima 笔记类内容导出受官方 API 返回内容影响，会尽量保存为 Markdown 文本；普通文件会尽量保存原文件。
+- “继续/重试”目前是按历史命令重新执行，依赖各平台已有增量逻辑跳过已完成内容。
+- “只重试失败项”已在任务报告中保留失败项数据入口，但需要各平台脚本进一步统一返回可重试 ID 后才能精确执行。
 
 ## 验证
 
-- 已执行 `python -m py_compile ima_knowledge.py wandao.py`。
-- 已执行 `python -m py_compile export_zsxq.py export_feishu.py export_aliyun_thoughts.py`。
 - 已执行 `node --check wandao_electron/main.js`。
 - 已执行 `node --check wandao_electron/renderer/app.js`。
-- 已实测知识星球链路：栏目文章 -> 目录文章 -> 目录内文章链接，目录页识别 139 个链接，导出 61 篇文章，按默认规则跳过 78 个视频主题，失败 0。
-- 已执行敏感信息扫描，确认仓库文件中不包含本次测试用账号、密码、API Key。
+- 已执行 `node --check wandao_electron/renderer/providers.js`。
+- 已执行 `node --check wandao_electron/scripts/npm_install_cn.js`。
+- 已执行 `git diff --check`。
+- 已确认 `wandao_electron/package.json`、`wandao_electron/package-lock.json`、`pyproject.toml` 版本号为 `1.1.2`。
 
 ## 下载
 
-- Windows 安装版：下载 `Wandao Setup 1.1.1.exe`。
-- Windows 免安装版：下载 `Wandao 1.1.1.exe`。
-- macOS Apple Silicon：下载 `Wandao-1.1.1-arm64-mac.zip`，适合 M1 / M2 / M3 / M4 芯片 Mac。
+- Windows 安装版：下载 `Wandao Setup 1.1.2.exe`。
+- Windows 免安装版：下载 `Wandao 1.1.2.exe`。
+- macOS Apple Silicon：下载 `Wandao-1.1.2-arm64-mac.zip`，适合 M1 / M2 / M3 / M4 芯片 Mac。
 - macOS Intel：本次不默认提供自动构建包，Intel 芯片 Mac 用户可以先使用源码方式运行，后续按需求补充。
 
 ## 注意
 
 - 普通用户请优先下载发行版，发行版内置 Python 运行时，不需要额外安装 Python。
 - 源码运行或参与开发时，仍需要自行安装 Python 3.10+ 和 Node.js。
+- 如果源码运行时 `npm install` 长时间不动，可以在 `wandao_electron` 目录执行 `npm run install:cn`。
 - 请只处理自己有权限访问的内容，并遵守目标平台服务条款和版权要求。
 - 请勿在 Issue、PR、截图或日志里提交 Cookie、账号密码、App Secret、Token、API Key 等敏感信息。

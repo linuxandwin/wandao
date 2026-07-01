@@ -715,6 +715,120 @@ button:disabled {
   color: var(--warning-text);
 }
 
+/* Task history */
+.task-history-section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.task-history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-history-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.task-history-header p {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.task-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.task-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.task-history-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 0;
+}
+
+.task-history-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--panel-soft);
+}
+
+.task-history-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.task-history-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.task-history-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.task-history-summary {
+  color: var(--subtle);
+  font-size: 12px;
+  margin-top: 6px;
+  word-break: break-word;
+}
+
+.task-history-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.task-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+
+.task-status.completed {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.task-status.failed,
+.task-status.stopped {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.task-status.running {
+  color: var(--warning-text);
+  border-color: var(--warning-border);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;

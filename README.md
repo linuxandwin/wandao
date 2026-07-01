@@ -78,6 +78,9 @@ Author: `tllovesxs`
 - 🧭 统一桌面端：左侧按“导出 / 导入”分类展示平台入口。
 - ✅ 目录选择：先读取目录，再选择全部或部分内容。
 - 📊 进度反馈：读取目录、导入、导出都有进度条和实时日志。
+- 🧾 任务历史：导入导出会保留最近任务记录，可复制任务报告，也可继续/重试未完成任务。
+- 🧩 Provider 架构：平台入口逐步插件化，新增平台时优先注册 provider，降低 UI 维护成本。
+- 🧯 错误报告：用户日志和详细日志分离，反馈问题时可一键复制脱敏后的详细报告。
 - 🔁 增量更新：已导出的文档可以跳过，只补缺失内容。
 - 🖼️ 图片和附件处理：尽量把正文图片、附件下载或上传到目标平台。
 - 🔎 浏览器自动查找：自动扫描 Chrome、Edge、Chromium，也支持手动指定。
@@ -103,31 +106,61 @@ Author: `tllovesxs`
 
 发行版已内置 Python 运行时，普通用户不需要额外安装 Python。
 
-### 🧑‍💻 开发者
+### 🧑‍💻 开发调试
+
+如果你只是使用软件，请下载发行版；如果你想改代码或本地调试，再使用源码启动。
+
+> 普通用户不需要执行 `npm install`。这个命令只给开发者源码调试用，首次执行会下载 Electron，网络不好时可能等待较久。
+
+Windows PowerShell：
 
 ```powershell
 git clone https://github.com/tllovesxs/wandao.git
 cd wandao
-python -m venv .venv
-.\.venv\Scripts\activate
 python -m pip install -r requirements.txt
 cd wandao_electron
 npm install
 npm start
 ```
 
-国内网络环境也可以使用 Gitee 镜像：
+如果 `npm install` 长时间不动，通常是 Electron 下载地址访问慢。可以按 `Ctrl + C` 停止后，在 `wandao_electron` 目录执行国内镜像安装：
+
+```powershell
+npm run install:cn
+```
+
+如果仍然失败，再执行：
+
+```powershell
+npm cache clean --force
+npm run install:cn
+```
+
+项目已在 `wandao_electron/.npmrc` 内配置 npm 国内镜像，`npm run install:cn` 会额外使用 Electron 国内镜像。
+
+<details>
+<summary>可选：使用虚拟环境、Gitee 镜像或 macOS/Linux</summary>
+
+如果你希望 Python 依赖不污染系统环境，可以先创建虚拟环境：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+```
+
+国内网络环境也可以把 clone 地址换成 Gitee：
 
 ```powershell
 git clone https://gitee.com/shi-xiansong/wandao.git
-cd wandao
 ```
 
-macOS/Linux 将虚拟环境激活命令换成：
+macOS/Linux 激活虚拟环境使用：
 
 ```bash
 source .venv/bin/activate
 ```
+
+</details>
 
 ## 🧩 常用流程
 

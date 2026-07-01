@@ -34,6 +34,10 @@ let latestReleaseUrl = 'https://github.com/tllovesxs/wandao/releases/latest';
 const MAX_LOG_ENTRIES = 2000;
 const userLogEntries = [];
 const detailLogEntries = [];
+let logViewMode = localStorage.getItem('wandao-log-view') === 'detail' ? 'detail' : 'user';
+const MAX_TASK_HISTORY = 80;
+let taskHistory = [];
+let activeHistoryTask = null;
 
 const ERROR_RULES = [
   {
@@ -181,35 +185,81 @@ function trimLogStore(entries) {
 }
 
 function appendDetailedLog(source, type, message) {
-  detailLogEntries.push({
+  const entry = {
     time: new Date().toISOString(),
     source,
     type,
     message: normalizeLogMessage(message)
-  });
+  };
+  detailLogEntries.push(entry);
   trimLogStore(detailLogEntries);
+  if (logViewMode === 'detail') renderDetailedLogEntry(entry);
 }
 
-function renderUserLogEntry(message, type = 'info') {
+function formatLogTime(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return new Date().toLocaleTimeString();
+  return date.toLocaleTimeString();
+}
+
+function renderLogEntry(message, type = 'info', time = new Date().toISOString()) {
   const logContent = document.getElementById('log-content');
   if (!logContent) return;
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
-  const timestamp = new Date().toLocaleTimeString();
+  const timestamp = formatLogTime(time);
   entry.textContent = `[${timestamp}] ${message}`;
   logContent.appendChild(entry);
   logContent.scrollTop = logContent.scrollHeight;
 }
 
+function renderUserLogEntry(entry) {
+  renderLogEntry(entry.message, entry.type, entry.time);
+}
+
+function renderDetailedLogEntry(entry) {
+  const source = entry.source ? `[${entry.source}] ` : '';
+  renderLogEntry(`${source}${entry.message}`, entry.type, entry.time);
+}
+
+function updateLogViewHeader() {
+  const title = document.getElementById('log-title');
+  const button = document.getElementById('btn-settings');
+  if (title) title.textContent = logViewMode === 'detail' ? '详细日志' : '用户日志';
+  if (button) button.textContent = logViewMode === 'detail' ? '用户日志' : '详细日志';
+}
+
+function renderLogPanel() {
+  updateLogViewHeader();
+  const logContent = document.getElementById('log-content');
+  if (!logContent) return;
+  logContent.innerHTML = '';
+  const entries = logViewMode === 'detail' ? detailLogEntries : userLogEntries;
+  entries.forEach((entry) => {
+    if (logViewMode === 'detail') {
+      renderDetailedLogEntry(entry);
+    } else {
+      renderUserLogEntry(entry);
+    }
+  });
+}
+
+function toggleLogViewMode() {
+  logViewMode = logViewMode === 'detail' ? 'user' : 'detail';
+  localStorage.setItem('wandao-log-view', logViewMode);
+  renderLogPanel();
+}
+
 function appendUserLog(message, type = 'info') {
   const text = normalizeLogMessage(message);
-  userLogEntries.push({
+  const entry = {
     time: new Date().toISOString(),
     type,
     message: text
-  });
+  };
+  userLogEntries.push(entry);
   trimLogStore(userLogEntries);
-  renderUserLogEntry(text, type);
+  if (logViewMode === 'user') renderUserLogEntry(entry);
 }
 
 function compactLogSummary(message, maxLength = 220) {
@@ -269,8 +319,7 @@ function clearLog() {
   userLogEntries.length = 0;
   detailLogEntries.length = 0;
   pythonLogSummaryBuffer = '';
-  const logContent = document.getElementById('log-content');
-  if (logContent) logContent.innerHTML = '';
+  renderLogPanel();
 }
 
 function maskSensitiveText(value) {
@@ -326,6 +375,351 @@ async function copyDeveloperReport() {
 
   await window.electronAPI.copyText(maskSensitiveText(report));
   log('已复制错误报告。你可以直接粘贴给开发者，敏感字段已自动脱敏。', 'success');
+}
+
+function taskHistoryPath() {
+  const root = appPaths?.userData || appPaths?.dataRoot;
+  return root ? `${root}/task_history.json` : '';
+}
+
+function makeTaskId() {
+  const random = Math.random().toString(36).slice(2, 8);
+  return `${Date.now()}-${random}`;
+}
+
+function statusText(status) {
+  const map = {
+    running: '进行中',
+    completed: '已完成',
+    failed: '失败',
+    stopped: '已停止'
+  };
+  return map[status] || status || '未知';
+}
+
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes} 分 ${rest} 秒`;
+}
+
+function maskArgs(args) {
+  const sensitiveKeys = new Set([
+    '--password',
+    '--password-stdin',
+    '--app-secret',
+    '--api-key',
+    '--client-secret',
+    '--token',
+    '--cookie'
+  ]);
+  const masked = [];
+  for (let index = 0; index < (args || []).length; index += 1) {
+    const value = String(args[index]);
+    masked.push(value);
+    if (sensitiveKeys.has(value) && index + 1 < args.length) {
+      masked.push('***');
+      index += 1;
+    }
+  }
+  return masked;
+}
+
+function collectFailureItems(data) {
+  const failures = [];
+  const visit = (value) => {
+    if (!value || failures.length >= 100) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    const looksLikeFailure = value.error || value.reason || value.message || value.relativePath || value.url || value.title;
+    if (looksLikeFailure) failures.push(value);
+    Object.entries(value).forEach(([key, child]) => {
+      if (/fail|error/i.test(key)) visit(child);
+    });
+  };
+  if (data && typeof data === 'object') {
+    Object.entries(data).forEach(([key, value]) => {
+      if (/fail|error/i.test(key)) visit(value);
+    });
+  }
+  return failures;
+}
+
+function extractTaskStats(data, errorText = '') {
+  const stats = {
+    exported: 0,
+    imported: 0,
+    skipped: 0,
+    failed: 0,
+    total: 0,
+    failureItems: []
+  };
+  const numericKeys = {
+    exported: /exported|export.*docs|imageSuccess/i,
+    imported: /imported|created|uploaded|success/i,
+    skipped: /skipped|skip/i,
+    failed: /failures|failed|errorCount|imageFailure/i,
+    total: /total|sourceLinkCount|selectedLinkCount|docCount|fileCount/i
+  };
+  const visit = (value, key = '') => {
+    if (value === null || value === undefined) return;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      Object.entries(numericKeys).forEach(([name, pattern]) => {
+        if (pattern.test(key)) stats[name] += value;
+      });
+      return;
+    }
+    if (Array.isArray(value)) {
+      if (/fail|error/i.test(key)) stats.failed += value.length;
+      value.forEach((item) => visit(item));
+      return;
+    }
+    if (typeof value === 'object') {
+      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey));
+    }
+  };
+  visit(data);
+  stats.failureItems = collectFailureItems(data);
+  if (!stats.failed && stats.failureItems.length) stats.failed = stats.failureItems.length;
+  if (errorText && !stats.failed) stats.failed = 1;
+  return stats;
+}
+
+function taskSummary(task) {
+  const stats = task.stats || {};
+  const parts = [];
+  if (stats.total) parts.push(`总数 ${stats.total}`);
+  if (stats.exported) parts.push(`导出 ${stats.exported}`);
+  if (stats.imported) parts.push(`导入 ${stats.imported}`);
+  if (stats.skipped) parts.push(`跳过 ${stats.skipped}`);
+  if (stats.failed) parts.push(`失败 ${stats.failed}`);
+  if (!parts.length && task.error) parts.push(compactLogSummary(task.error, 120));
+  return parts.join('，') || '暂无统计信息';
+}
+
+async function loadTaskHistory() {
+  const filePath = taskHistoryPath();
+  if (!filePath) return;
+  const data = await readJsonFileIfExists(filePath);
+  taskHistory = Array.isArray(data?.tasks) ? data.tasks : [];
+  renderTaskHistory();
+}
+
+async function saveTaskHistory() {
+  const filePath = taskHistoryPath();
+  if (!filePath) return;
+  const tasks = taskHistory.slice(0, MAX_TASK_HISTORY).map((task) => {
+    const { pendingSave, detailStartIndex, ...persistable } = task;
+    return persistable;
+  });
+  const content = JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    tasks
+  }, null, 2);
+  const result = await window.electronAPI.writeFile(filePath, content);
+  if (!result.success) {
+    appendDetailedLog('task-history', 'error', result.error || '保存任务历史失败');
+  }
+}
+
+function renderTaskHistory() {
+  const list = document.getElementById('task-history-list');
+  if (!list) return;
+  const tasks = taskHistory.slice(0, 8);
+  if (!tasks.length) {
+    list.innerHTML = '<div class="task-history-empty">暂无任务历史。</div>';
+    return;
+  }
+  list.innerHTML = tasks.map((task) => {
+    const startedAt = task.startedAt ? new Date(task.startedAt).toLocaleString() : '-';
+    const elapsed = task.elapsedMs ? `，耗时 ${formatDuration(task.elapsedMs)}` : '';
+    const canResume = task.status !== 'completed';
+    return `
+      <div class="task-history-item" data-task-id="${escapeHtml(task.id)}">
+        <div class="task-history-main">
+          <div>
+            <div class="task-history-title">${escapeHtml(task.title || task.providerTitle || '未命名任务')}</div>
+            <div class="task-history-meta">
+              <span class="task-status ${escapeHtml(task.status || '')}">${escapeHtml(statusText(task.status))}</span>
+              <span>${escapeHtml(startedAt)}${escapeHtml(elapsed)}</span>
+            </div>
+          </div>
+          <div class="task-history-buttons">
+            <button class="btn-text" type="button" data-history-action="copy">复制报告</button>
+            <button class="btn-text" type="button" data-history-action="resume" ${canResume ? '' : 'disabled'}>继续/重试</button>
+          </div>
+        </div>
+        <div class="task-history-summary">${escapeHtml(taskSummary(task))}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function createTaskReport(task) {
+  const provider = TOOLS[task.providerId] || {};
+  return maskSensitiveText([
+    '# 万能导任务报告',
+    '',
+    `任务 ID：${task.id}`,
+    `平台：${task.providerTitle || provider.title || task.providerId || '-'}`,
+    `任务：${task.title || '-'}`,
+    `状态：${statusText(task.status)}`,
+    `开始时间：${task.startedAt || '-'}`,
+    `结束时间：${task.finishedAt || '-'}`,
+    task.elapsedMs ? `耗时：${formatDuration(task.elapsedMs)}` : '',
+    `脚本：${task.script || '-'}`,
+    `参数：${JSON.stringify(maskArgs(task.args || []))}`,
+    '',
+    '## 统计',
+    taskSummary(task),
+    '',
+    '## 错误',
+    task.error || '无',
+    '',
+    '## 失败项',
+    task.stats?.failureItems?.length ? JSON.stringify(task.stats.failureItems, null, 2) : '无',
+    '',
+    '## 结果数据',
+    task.resultData ? JSON.stringify(task.resultData, null, 2) : '无',
+    '',
+    '## 本任务详细日志',
+    task.logs?.length ? task.logs.map((entry) => `[${entry.time}] [${entry.source}] [${entry.type}] ${entry.message}`).join('\n') : '无'
+  ].filter((line) => line !== '').join('\n'));
+}
+
+async function copyTaskReport(taskId) {
+  const task = taskHistory.find((item) => item.id === taskId);
+  if (!task) return;
+  await window.electronAPI.copyText(createTaskReport(task));
+  log('已复制任务报告。', 'success');
+}
+
+function startHistoryTask(script, args, context = {}) {
+  if (context.track === false) return null;
+  const provider = TOOLS[context.providerId] || {};
+  const task = {
+    id: makeTaskId(),
+    providerId: context.providerId || currentTool,
+    providerTitle: provider.title || context.providerId || currentTool,
+    title: context.title || provider.title || script,
+    action: context.action || (provider.isImport ? '导入' : '导出'),
+    status: 'running',
+    script,
+    args: Array.isArray(args) ? [...args] : [],
+    startedAt: new Date().toISOString(),
+    finishedAt: '',
+    elapsedMs: 0,
+    resultData: null,
+    error: '',
+    stats: extractTaskStats(null),
+    detailStartIndex: detailLogEntries.length,
+    logs: []
+  };
+  taskHistory.unshift(task);
+  taskHistory = taskHistory.slice(0, MAX_TASK_HISTORY);
+  activeHistoryTask = task;
+  task.pendingSave = saveTaskHistory();
+  renderTaskHistory();
+  return task;
+}
+
+async function finishHistoryTask(task, result, thrownError = null) {
+  if (!task) return;
+  if (task.pendingSave) {
+    await task.pendingSave.catch(() => {});
+    delete task.pendingSave;
+  }
+  const finishedAt = new Date();
+  const startedAt = task.startedAt ? new Date(task.startedAt) : finishedAt;
+  const success = result?.success && !thrownError;
+  task.status = success ? 'completed' : (task.stopRequested ? 'stopped' : 'failed');
+  task.finishedAt = finishedAt.toISOString();
+  task.elapsedMs = finishedAt.getTime() - startedAt.getTime();
+  task.resultData = result?.data || null;
+  task.error = thrownError ? formatError(thrownError) : (result?.error || '');
+  task.stats = extractTaskStats(task.resultData, task.error);
+  task.logs = detailLogEntries.slice(task.detailStartIndex || 0);
+  delete task.detailStartIndex;
+  if (activeHistoryTask?.id === task.id) activeHistoryTask = null;
+  await saveTaskHistory();
+  renderTaskHistory();
+}
+
+async function runTrackedPythonCommand(script, args, context = {}, options = {}) {
+  const task = startHistoryTask(script, args, context);
+  try {
+    const result = await window.electronAPI.runPythonCommand(script, args, options);
+    await finishHistoryTask(task, result);
+    return result;
+  } catch (error) {
+    await finishHistoryTask(task, null, error);
+    throw error;
+  }
+}
+
+function shouldTrackTask(title) {
+  const text = String(title || '');
+  if (/(保存|登录|读取|扫描|计划|配置|权限|知识库|文件夹)/.test(text)) return false;
+  return /(导出|导入|上传)/.test(text);
+}
+
+async function resumeTask(task) {
+  if (!task) return;
+  if (isRunning) {
+    alert('当前已有任务运行中，请等待结束或先停止当前任务。');
+    return;
+  }
+  if (!task.script || !Array.isArray(task.args)) {
+    alert('这条任务缺少可继续执行的命令参数。');
+    return;
+  }
+  if (!confirm(`将重新执行任务：${task.title || task.script}\n适合用于继续增量任务或重试失败任务。确认继续吗？`)) {
+    return;
+  }
+  if (task.providerId && TOOLS[task.providerId]) {
+    switchTool(task.providerId);
+  }
+  setProviderRunning(task.providerId || currentTool, true);
+  startProgress(`继续任务：${task.title || task.script}`, '正在按历史命令重新执行，脚本会根据自身增量能力跳过已完成内容。');
+  log(`继续任务：${task.title || task.script}`, 'info');
+  try {
+    const result = await runTrackedPythonCommand(task.script, task.args, {
+      providerId: task.providerId || currentTool,
+      title: `继续任务：${task.title || task.script}`,
+      action: task.action || '继续'
+    });
+    if (result.success) {
+      log('历史任务继续执行完成', 'success');
+      if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+      finishProgress(true, '历史任务继续执行完成');
+    } else {
+      log(`历史任务继续执行失败：${result.error}`, 'error');
+      finishProgress(false, '历史任务继续执行失败，请查看日志');
+    }
+  } catch (error) {
+    log(`历史任务继续执行出错：${formatError(error)}`, 'error');
+    finishProgress(false, '历史任务继续执行出错，请查看日志');
+  } finally {
+    setProviderRunning(task.providerId || currentTool, false);
+  }
+}
+
+function latestResumableTask() {
+  return taskHistory.find((task) => task.status !== 'completed');
+}
+
+function setProviderRunning(providerId, running) {
+  if (providerId === 'feishu-import' && typeof setFeishuImportRunning === 'function') {
+    setFeishuImportRunning(running);
+    return;
+  }
+  setRunning(running, providerId || currentTool);
 }
 
 function progressElements() {
@@ -1004,7 +1398,12 @@ async function runImaImportCommand(args, title, detail = '正在处理 ima 知�
   startProgress(title, detail);
   log(`开始：${title}`, 'info');
   try {
-    const result = await window.electronAPI.runPythonCommand('ima_knowledge.py', args);
+    const result = await runTrackedPythonCommand('ima_knowledge.py', args, {
+      providerId: 'ima-import',
+      title,
+      action: '导入',
+      track: shouldTrackTask(title)
+    });
     if (result.success) {
       log(`${title}完成`, 'success');
       if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
@@ -1175,7 +1574,12 @@ async function runYuqueImportCommand(args, title, detail = '正在处理语雀�
   startProgress(title, detail);
   log(`开始：${title}`, 'info');
   try {
-    const result = await window.electronAPI.runPythonCommand('import_yuque.py', args);
+    const result = await runTrackedPythonCommand('import_yuque.py', args, {
+      providerId: 'yuque-import',
+      title,
+      action: '导入',
+      track: shouldTrackTask(title)
+    });
     if (result.success) {
       log(`${title}完成`, 'success');
       if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
@@ -1288,7 +1692,12 @@ async function runYinxiangImportCommand(args, title, detail = '正在处理印�
   startProgress(title, detail);
   log(`开始：${title}`, 'info');
   try {
-    const result = await window.electronAPI.runPythonCommand('import_yinxiang.py', args);
+    const result = await runTrackedPythonCommand('import_yinxiang.py', args, {
+      providerId: 'yinxiang-import',
+      title,
+      action: '导入',
+      track: shouldTrackTask(title)
+    });
     if (result.success) {
       log(`${title}完成`, 'success');
       if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
@@ -1793,7 +2202,12 @@ async function handleExport(toolId) {
   }
 
   try {
-    const result = await window.electronAPI.runPythonCommand(config.script, args);
+    const result = await runTrackedPythonCommand(config.script, args, {
+      providerId: toolId,
+      title: `${actionName}：${config.title}`,
+      action: actionName,
+      track: true
+    });
     if (result.success) {
       log(`${actionName}完成`, 'success');
       if (result.data) {
@@ -1816,6 +2230,17 @@ async function handleExport(toolId) {
 async function handleStop() {
   const result = await window.electronAPI.stopPythonProcess();
   if (result.success) {
+    if (activeHistoryTask) {
+      if (activeHistoryTask.pendingSave) {
+        await activeHistoryTask.pendingSave.catch(() => {});
+        delete activeHistoryTask.pendingSave;
+      }
+      activeHistoryTask.stopRequested = true;
+      activeHistoryTask.status = 'stopped';
+      activeHistoryTask.error = '用户手动停止任务';
+      await saveTaskHistory();
+      renderTaskHistory();
+    }
     startProgress('正在停止任务', '已发送停止请求，等待当前进程退出...');
   }
   log(result.success ? '已发送停止请求' : result.error, result.success ? 'info' : 'error');
@@ -2227,7 +2652,12 @@ async function runFeishuImportCommand(args, taskName) {
   startProgress(taskName, '任务启动中，正在等待进度信息...');
   log(`开始：${taskName}`, 'info');
   try {
-    const result = await window.electronAPI.runPythonCommand('import_feishu.py', args);
+    const result = await runTrackedPythonCommand('import_feishu.py', args, {
+      providerId: 'feishu-import',
+      title: taskName,
+      action: '导入',
+      track: shouldTrackTask(taskName)
+    });
     if (result.success) {
       log(`完成：${taskName}`, 'success');
       log(JSON.stringify(result.data || {}, null, 2), 'success');
@@ -2374,6 +2804,29 @@ document.addEventListener('DOMContentLoaded', () => {
       log(`复制错误报告失败：${formatError(error)}`, 'error');
     });
   });
+  document.getElementById('btn-history-refresh')?.addEventListener('click', () => {
+    loadTaskHistory().catch((error) => log(`刷新任务历史失败：${formatError(error)}`, 'error'));
+  });
+  document.getElementById('btn-history-resume-last')?.addEventListener('click', () => {
+    const task = latestResumableTask();
+    if (!task) {
+      alert('没有可继续的失败或中断任务。');
+      return;
+    }
+    resumeTask(task);
+  });
+  document.getElementById('task-history-list')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-history-action]');
+    const item = event.target.closest('[data-task-id]');
+    if (!button || !item) return;
+    const task = taskHistory.find((entry) => entry.id === item.dataset.taskId);
+    if (!task) return;
+    if (button.dataset.historyAction === 'copy') {
+      copyTaskReport(task.id).catch((error) => log(`复制任务报告失败：${formatError(error)}`, 'error'));
+    } else if (button.dataset.historyAction === 'resume') {
+      resumeTask(task);
+    }
+  });
   document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
   document.getElementById('btn-check-update')?.addEventListener('click', () => checkForUpdates(false));
   document.getElementById('btn-open-release')?.addEventListener('click', () => {
@@ -2385,16 +2838,17 @@ document.addEventListener('DOMContentLoaded', () => {
     window.electronAPI.showAbout();
   });
 
-  document.getElementById('btn-settings').addEventListener('click', () => {
-    alert('设置功能开发中...');
-  });
+  document.getElementById('btn-settings').addEventListener('click', toggleLogViewMode);
+  renderLogPanel();
 
   window.electronAPI.getAppPath().then((paths) => {
     appPaths = paths;
+    loadTaskHistory().catch((error) => log(`读取任务历史失败：${formatError(error)}`, 'error'));
     switchTool(DEFAULT_TOOL_ID);
     log('万能导已启动', 'success');
     window.setTimeout(() => checkForUpdates(true), 1000);
   }).catch(() => {
+    renderTaskHistory();
     switchTool(DEFAULT_TOOL_ID);
     log('万能导已启动', 'success');
     window.setTimeout(() => checkForUpdates(true), 1000);

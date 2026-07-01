@@ -52,9 +52,25 @@
           <div class="progress-detail" id="progress-detail">等待任务开始</div>
         </section>
 
+        <section class="task-history-section">
+          <div class="task-history-header">
+            <div>
+              <h3>任务历史</h3>
+              <p>记录最近导入导出任务，可复制报告或继续上次未完成任务。</p>
+            </div>
+            <div class="task-history-actions">
+              <button class="btn-text" id="btn-history-refresh" type="button">刷新</button>
+              <button class="btn-text" id="btn-history-resume-last" type="button">继续上次任务</button>
+            </div>
+          </div>
+          <div class="task-history-list" id="task-history-list">
+            <div class="task-history-empty">暂无任务历史。</div>
+          </div>
+        </section>
+
         <section class="log-section">
           <div class="log-header">
-            <h3>用户日志</h3>
+            <h3 id="log-title">用户日志</h3>
             <div class="log-actions">
               <button class="btn-text" id="btn-settings">设置</button>
               <button class="btn-text" id="btn-about">关于</button>
