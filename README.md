@@ -90,7 +90,7 @@ Author: `tllovesxs`
 - 🌙 夜间模式和更新检查：桌面端支持主题切换和新版本提示。
 
 ## ⚡ 快速开始
-
+如果你有基础计算机知识，推荐直接拉取源码进行启动，很方便，因为有时候我可能发行版打包更慢👌
 ### 👤 普通用户
 
 1. 打开 [GitHub Releases](https://github.com/tllovesxs/wandao/releases)。
