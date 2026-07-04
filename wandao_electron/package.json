@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -86,6 +86,14 @@
       {
         "from": "../export_youdao.py",
         "to": "python/export_youdao.py"
+      },
+      {
+        "from": "../export_onenote.py",
+        "to": "python/export_onenote.py"
+      },
+      {
+        "from": "../export_wiz.py",
+        "to": "python/export_wiz.py"
       },
       {
         "from": "../import_yinxiang.py",

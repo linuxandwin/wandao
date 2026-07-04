@@ -38,6 +38,8 @@ const ALLOWED_SCRIPTS = new Set([
   'export_aliyun_thoughts.py',
   'export_yinxiang.py',
   'export_youdao.py',
+  'export_onenote.py',
+  'export_wiz.py',
   'import_yinxiang.py',
   'import_yuque.py',
   'import_feishu.py',
@@ -115,6 +117,41 @@ function pythonEnv() {
     env.WANDAO_PYTHON_RUNTIME = bundledPython.root;
   }
   return env;
+}
+
+function commandLineLength(args) {
+  return (args || []).reduce((total, value) => total + String(value || '').length + 3, 0);
+}
+
+function compressDocIdArgs(scriptName, args) {
+  const supported = new Set(['export_onenote.py', 'export_wiz.py']);
+  if (!supported.has(scriptName)) {
+    return args;
+  }
+
+  const docIds = [];
+  const compactArgs = [];
+  for (let index = 0; index < (args || []).length; index += 1) {
+    const value = String(args[index]);
+    if (value === '--doc-id' && index + 1 < args.length) {
+      docIds.push(String(args[index + 1]));
+      index += 1;
+    } else {
+      compactArgs.push(value);
+    }
+  }
+
+  if (!docIds.length || (docIds.length < 50 && commandLineLength(args) < 12000)) {
+    return args;
+  }
+
+  const tmpDir = path.join(app.getPath('userData'), 'tmp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const prefix = path.basename(scriptName, '.py').replace(/^export_/, '');
+  const fileName = `${prefix}-doc-ids-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  const filePath = path.join(tmpDir, fileName);
+  fs.writeFileSync(filePath, JSON.stringify({ docIds }, null, 2), 'utf-8');
+  return [...compactArgs, '--doc-id-file', filePath];
 }
 
 function parseLastJson(stdout) {
@@ -413,13 +450,15 @@ ipcMain.handle('save-file', async (event, options) => {
 ipcMain.handle('run-python-command', async (event, scriptName, args, options = {}) => {
   return new Promise((resolve, reject) => {
     let scriptPath;
+    let commandArgs;
     try {
       scriptPath = findPythonScript(scriptName);
+      commandArgs = compressDocIdArgs(scriptName, args || []);
     } catch (error) {
       resolve({ success: false, error: error.message || String(error) });
       return;
     }
-    const pythonArgs = [scriptPath, ...args];
+    const pythonArgs = [scriptPath, ...commandArgs];
 
     const proc = spawn(pythonCommand(), pythonArgs, {
       cwd: path.dirname(scriptPath),

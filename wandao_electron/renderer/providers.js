@@ -108,6 +108,30 @@
       capabilities: { login: true, scanToc: true }
     },
     {
+      id: 'wiz',
+      platform: 'wiz',
+      navLabel: '为知笔记导出',
+      title: '为知笔记导出',
+      description: '将为知笔记网页版内容导出为本地 Markdown 文件，并保留目录和图片',
+      script: 'export_wiz.py',
+      outputParam: '--output',
+      noUrl: true,
+      defaults: { output: 'exports/wiz', delay: '0', jitter: '0' },
+      capabilities: { login: true, scanToc: true }
+    },
+    {
+      id: 'onenote',
+      platform: 'onenote',
+      navLabel: 'OneNote 导出',
+      title: 'OneNote 本地笔记导出',
+      description: '将 Windows 桌面版 OneNote 导出为 Markdown，并保留笔记本、分区和页面层级',
+      script: 'export_onenote.py',
+      outputParam: '--output',
+      noUrl: true,
+      defaults: { output: 'exports/onenote', delay: '0', jitter: '0' },
+      capabilities: { login: false, scanToc: true }
+    },
+    {
       id: 'ima-export',
       platform: 'ima',
       navLabel: 'ima 知识库导出',

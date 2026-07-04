@@ -47,6 +47,12 @@ const ERROR_RULES = [
     suggestion: '请检查输入目录、输出目录或脚本文件是否存在，路径里不要包含已经被移动或删除的文件。'
   },
   {
+    category: '任务参数过长',
+    pattern: /(ENAMETOOLONG|argument list too long|command line.*too long|spawn.*too long)/i,
+    title: '本次选择内容太多，启动参数超过系统限制',
+    suggestion: '请更新到新版后重试；新版会把大量文档 ID 写入临时文件，避免 Windows 命令行长度限制。'
+  },
+  {
     category: '未登录或登录失效',
     pattern: /(未登录|登录失效|登录已失效|重新登录|登录凭证|没有可用.*凭证|没有可用.*cookie|cookie 中缺少|login required|please login|auth file|cookie|cookies|401|unauthorized|会话|凭证.*失效)/i,
     title: '登录状态可能已失效',
@@ -2028,6 +2034,30 @@ function normalizeTocNodes(toolId, data) {
   if (toolId === 'youdao') {
     (data.nodes || []).forEach((item, index) => {
       const nodeId = String(item.nodeId || `youdao-node:${index}`);
+      nodes.push({
+        nodeId,
+        exportId: String(item.exportId || ''),
+        title: item.title || '未命名',
+        parentNodeId: item.parentNodeId || '',
+        selectable: Boolean(item.selectable && item.exportId)
+      });
+    });
+  }
+  if (toolId === 'wiz') {
+    (data.nodes || []).forEach((item, index) => {
+      const nodeId = String(item.nodeId || `wiz-node:${index}`);
+      nodes.push({
+        nodeId,
+        exportId: String(item.exportId || ''),
+        title: item.title || '未命名',
+        parentNodeId: item.parentNodeId || '',
+        selectable: Boolean(item.selectable && item.exportId)
+      });
+    });
+  }
+  if (toolId === 'onenote') {
+    (data.nodes || []).forEach((item, index) => {
+      const nodeId = String(item.nodeId || `onenote-node:${index}`);
       nodes.push({
         nodeId,
         exportId: String(item.exportId || ''),
