@@ -83,6 +83,14 @@ npm run build:mac:arm64
 - 增加一个教程型 provider
 - 增加一个文件型 provider 脚本
 
+新增平台建议优先使用文件型 provider：
+
+- 标准平台：复制 `providers/_template_standard/`。
+- 复杂平台：复制 `providers/_template_custom/`，先提交核心脚本和流程说明。
+- 示例参考：`providers/_demo_local_export/`。
+
+详细规范见 [docs/插件开发指南.md](docs/插件开发指南.md)。
+
 请在 PR 描述里写清楚：
 
 - 改了什么
@@ -94,8 +102,10 @@ npm run build:mac:arm64
 
 - `provider.json` 的平台名称、能力标签、状态和信任等级。
 - `README.md` 的使用说明、限制、登录方式和常见失败原因。
+- 是否使用标准 UI；如果需要专属 UI，请说明标准 UI 为什么不够。
 - 至少一次真实导出或导入测试结果；如果暂时无法测试，请明确写出原因。
 - 是否支持目录结构、图片、附件、断点续跑和失败重试。
+- 是否参考第三方项目，以及对应许可证。
 
 ## 代码风格
 

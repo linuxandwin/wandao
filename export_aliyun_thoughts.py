@@ -1584,6 +1584,12 @@ def document_target_path(
     return planned_doc_paths.get(doc.id) or output / f"{pad(index)}-{sanitize_filename(doc.title)}.md"
 
 
+def ensure_document_parent_dirs(docs: list[Node], planned_doc_paths: dict[str, Path], output: Path) -> None:
+    for index, doc in enumerate(docs, start=1):
+        target = planned_doc_paths.get(doc.id) or output / f"{pad(index)}-{sanitize_filename(doc.title)}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+
 def rewrite_internal_links(markdown: str, md_path: Path, doc_paths: dict[str, Path]) -> str:
     pattern = re.compile(r"https://thoughts\.aliyun\.com/workspaces/([^/\s)]+)/docs/([0-9a-fA-F]+)")
 
@@ -1749,8 +1755,6 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
 
         by_id = {node.id: node for node in nodes}
         folder_paths, planned_doc_paths, children, root_items = build_paths(nodes, output)
-        for path in folder_paths.values():
-            path.mkdir(parents=True, exist_ok=True)
 
         api_client: AliyunThoughtsEditClient | None = None
         api_user_id = ""
@@ -1773,6 +1777,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
 
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
         docs = [node for node in nodes if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)]
+        ensure_document_parent_dirs(docs, planned_doc_paths, output)
         existing_docs = scan_exported_docs(output)
         doc_paths: dict[str, Path] = {}
         failures: list[dict[str, str]] = []
@@ -1791,6 +1796,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 break
 
             md_path = document_target_path(doc, index, by_id, children, folder_paths, planned_doc_paths, output)
+            md_path.parent.mkdir(parents=True, exist_ok=True)
             doc_paths[doc.id] = existing_docs.get(doc.id, md_path)
 
             if args.incremental and doc.id in existing_docs and not args.update_existing:

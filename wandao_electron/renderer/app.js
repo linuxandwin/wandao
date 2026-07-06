@@ -5,8 +5,31 @@ const PRIMARY_NAV_ITEMS = [
   { id: 'home', label: '首页', description: '快速开始' },
   { id: 'platform-center', label: '平台中心', description: '选择平台和操作' },
   { id: 'task-center', label: '任务中心', description: '查看最近任务' },
+  { id: 'notice-center', label: '教程公告', description: '公告与教程' },
   { id: 'settings', label: '设置', description: '偏好与帮助' }
 ];
+const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/';
+const GITHUB_BLOB_BASE = 'https://github.com/tllovesxs/wandao/blob/main/';
+const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcements.json`;
+const FALLBACK_NOTICE_CENTER = {
+  version: 1,
+  updatedAt: '2026-07-06',
+  repository: GITHUB_REPO_URL,
+  items: [
+    {
+      id: 'fallback-read-first',
+      type: 'announcement',
+      pinned: true,
+      title: '使用前请先看：万能导的使用边界',
+      summary: '万能导只处理你有权限访问和迁移的内容。遇到平台权限、登录过期、接口限制时，请先确认账号权限和目标平台状态。',
+      date: '2026-07-06',
+      badge: '置顶',
+      tags: ['必读', '权限'],
+      body: '# 使用前请先看：万能导的使用边界\n\n万能导用于把你有权限访问的知识内容导出、导入或迁移到其他平台。请不要用它处理没有授权的资料，也不要绕过目标平台的访问控制。\n\n## 常见情况\n\n- 如果平台提示权限不足，需要先在对应平台完成授权或登录。\n- 如果登录凭证过期，请重新点击“登录并保存凭证”。\n- 如果导入或导出速度变慢，通常和平台接口限流、图片体积、网络状态有关。'
+    }
+  ]
+};
 const PLATFORM_ORDER = [
   'feishu',
   'yuque',
@@ -102,6 +125,15 @@ let pythonLogSummaryBuffer = '';
 let progressVisible = false;
 let latestReleaseUrl = 'https://github.com/tllovesxs/wandao/releases/latest';
 let latestYuqueImportReportFile = '';
+let noticeCenterState = {
+  status: 'idle',
+  manifest: null,
+  selectedId: '',
+  selectedBody: '',
+  selectedBodyStatus: 'idle',
+  selectedBodyError: '',
+  error: ''
+};
 const MAX_LOG_ENTRIES = 2000;
 const userLogEntries = [];
 const detailLogEntries = [];
@@ -1184,6 +1216,186 @@ function bindWorkbenchActions(root = document.getElementById('content-area')) {
   });
 }
 
+function encodedGitHubPath(pathValue) {
+  return String(pathValue || '')
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+}
+
+function noticeRawUrl(item) {
+  if (!item) return '';
+  if (item.url && String(item.url).startsWith('https://raw.githubusercontent.com/')) return item.url;
+  if (item.path) return `${GITHUB_RAW_BASE}${encodedGitHubPath(item.path)}`;
+  return '';
+}
+
+function noticeGitHubUrl(item) {
+  if (!item) return GITHUB_REPO_URL;
+  if (item.htmlUrl) return item.htmlUrl;
+  if (item.path) return `${GITHUB_BLOB_BASE}${encodedGitHubPath(item.path)}`;
+  return GITHUB_REPO_URL;
+}
+
+function normalizeNoticeManifest(raw) {
+  const manifest = raw && typeof raw === 'object' ? raw : FALLBACK_NOTICE_CENTER;
+  const items = Array.isArray(manifest.items) ? manifest.items : [];
+  return {
+    ...manifest,
+    items: items
+      .map((item, index) => ({
+        id: String(item.id || `notice-${index}`),
+        type: item.type === 'tutorial' ? 'tutorial' : 'announcement',
+        pinned: Boolean(item.pinned),
+        title: String(item.title || '未命名内容'),
+        summary: String(item.summary || ''),
+        date: String(item.date || manifest.updatedAt || ''),
+        badge: String(item.badge || ''),
+        tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+        path: item.path ? String(item.path) : '',
+        url: item.url ? String(item.url) : '',
+        htmlUrl: item.htmlUrl ? String(item.htmlUrl) : '',
+        body: item.body ? String(item.body) : ''
+      }))
+      .sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        return String(b.date).localeCompare(String(a.date)) || a.title.localeCompare(b.title, 'zh-Hans-CN');
+      })
+  };
+}
+
+function noticeItems() {
+  return normalizeNoticeManifest(noticeCenterState.manifest || FALLBACK_NOTICE_CENTER).items;
+}
+
+function noticeGroups(items = noticeItems()) {
+  const announcements = items.filter((item) => item.type !== 'tutorial');
+  const tutorials = items.filter((item) => item.type === 'tutorial');
+  return { announcements, tutorials };
+}
+
+function defaultNoticeId(items = noticeItems()) {
+  const groups = noticeGroups(items);
+  return groups.announcements[0]?.id || groups.tutorials[0]?.id || items[0]?.id || '';
+}
+
+async function readRemoteText(url) {
+  if (!url) throw new Error('文档没有配置 GitHub 路径');
+  if (window.electronAPI?.fetchRemoteText) {
+    const result = await window.electronAPI.fetchRemoteText(url);
+    if (!result?.success) throw new Error(result?.error || '读取 GitHub 文档失败');
+    return result.content || '';
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
+  return response.text();
+}
+
+function renderNoticeCenterIfActive() {
+  if (currentTool === 'notice-center') {
+    renderNoticeCenterPage();
+  }
+}
+
+async function loadNoticeItemBody(item, shouldRender = true) {
+  if (!item) return;
+  noticeCenterState.selectedBodyStatus = 'loading';
+  noticeCenterState.selectedBody = '';
+  noticeCenterState.selectedBodyError = '';
+  if (shouldRender) renderNoticeCenterIfActive();
+  try {
+    noticeCenterState.selectedBody = item.body || await readRemoteText(noticeRawUrl(item));
+    noticeCenterState.selectedBodyStatus = 'ready';
+  } catch (error) {
+    noticeCenterState.selectedBody = '';
+    noticeCenterState.selectedBodyError = formatError(error);
+    noticeCenterState.selectedBodyStatus = 'error';
+  }
+  if (shouldRender) renderNoticeCenterIfActive();
+}
+
+async function loadNoticeCenter(force = false) {
+  if (noticeCenterState.status === 'loading') return;
+  if (!force && noticeCenterState.status === 'ready') return;
+  noticeCenterState.status = 'loading';
+  noticeCenterState.error = '';
+  renderNoticeCenterIfActive();
+  try {
+    const text = await readRemoteText(NOTICE_CENTER_MANIFEST_URL);
+    noticeCenterState.manifest = normalizeNoticeManifest(JSON.parse(text));
+    noticeCenterState.status = 'ready';
+  } catch (error) {
+    noticeCenterState.manifest = normalizeNoticeManifest(FALLBACK_NOTICE_CENTER);
+    noticeCenterState.status = 'fallback';
+    noticeCenterState.error = formatError(error);
+  }
+  const items = noticeItems();
+  if (!items.some((item) => item.id === noticeCenterState.selectedId)) {
+    noticeCenterState.selectedId = defaultNoticeId(items);
+  }
+  await loadNoticeItemBody(items.find((item) => item.id === noticeCenterState.selectedId), false);
+  renderNoticeCenterIfActive();
+}
+
+function noticeKindLabel(item) {
+  if (item.pinned) return '置顶公告';
+  if (item.type === 'tutorial') return '教程';
+  return item.badge || '公告';
+}
+
+function renderNoticeCard(item) {
+  const active = item.id === noticeCenterState.selectedId;
+  const classes = ['notice-card'];
+  if (active) classes.push('active');
+  if (item.pinned) classes.push('pinned');
+  return `
+    <button class="${classes.join(' ')}" data-notice-id="${escapeHtml(item.id)}" type="button">
+      <span class="notice-card-meta">
+        <strong>${escapeHtml(noticeKindLabel(item))}</strong>
+        <time>${escapeHtml(item.date || '')}</time>
+      </span>
+      <span class="notice-card-title">${escapeHtml(item.title)}</span>
+      ${item.summary ? `<span class="notice-card-summary">${escapeHtml(item.summary)}</span>` : ''}
+    </button>
+  `;
+}
+
+function renderNoticeListSection(title, items, emptyText) {
+  return `
+    <section class="notice-list-section">
+      <div class="notice-list-title">
+        <h4>${escapeHtml(title)}</h4>
+      </div>
+      ${items.length ? items.map(renderNoticeCard).join('') : `<div class="notice-empty">${escapeHtml(emptyText)}</div>`}
+    </section>
+  `;
+}
+
+function bindNoticeCenterActions(root) {
+  root.querySelectorAll('[data-notice-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const item = noticeItems().find((entry) => entry.id === button.dataset.noticeId);
+      if (!item) return;
+      noticeCenterState.selectedId = item.id;
+      loadNoticeItemBody(item);
+    });
+  });
+  root.querySelector('[data-notice-action="refresh"]')?.addEventListener('click', () => {
+    loadNoticeCenter(true);
+  });
+  root.querySelectorAll('[data-notice-open]').forEach((button) => {
+    button.addEventListener('click', () => {
+      window.electronAPI.openExternal(button.dataset.noticeOpen);
+    });
+  });
+  root.querySelectorAll('[data-external-link]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      window.electronAPI.openExternal(link.href);
+    });
+  });
+}
+
 function renderHomePage() {
   setTaskHistoryVisible(false);
   setToolHeading('首页', '选择平台，或查看最近任务。');
@@ -1368,6 +1580,105 @@ function renderTaskCenterPage() {
   renderTaskHistory();
 }
 
+function renderNoticeDocBody(selected) {
+  const status = noticeCenterState.selectedBodyStatus;
+  if (status === 'loading') {
+    return '<div class="notice-doc-loading">正在读取内容...</div>';
+  }
+  if (status === 'error') {
+    const detail = noticeCenterState.selectedBodyError || '';
+    const githubUrl = selected ? noticeGitHubUrl(selected) : '';
+    return `
+      <div class="notice-doc-empty">
+        <h4>这篇内容还没有同步到线上</h4>
+        <p>作者发布后即可查看。你也可以${githubUrl ? `<a href="${escapeHtml(githubUrl)}" data-external-link="true">在 GitHub 上查看原文</a>，或` : ''}稍后再刷新。</p>
+        ${detail ? `<details><summary>查看详细错误</summary><pre>${escapeHtml(detail)}</pre></details>` : ''}
+      </div>
+    `;
+  }
+  const source = noticeCenterState.selectedBody || selected?.body || '';
+  if (!source) {
+    return `
+      <div class="notice-doc-empty">
+        <h4>暂时没有内容</h4>
+        <p>选一个左侧列表里的公告或教程开始阅读。</p>
+      </div>
+    `;
+  }
+  return markdownToHtml(source);
+}
+
+function noticeSourceStatusText(status) {
+  if (status === 'loading') return '正在同步';
+  if (status === 'fallback') return '暂用内置内容';
+  return '来自 GitHub';
+}
+
+function renderNoticeCenterPage() {
+  setTaskHistoryVisible(false);
+  setToolHeading('教程公告', '公告与教程从仓库同步，选择左侧条目阅读。');
+  const contentArea = document.getElementById('content-area');
+  const manifest = normalizeNoticeManifest(noticeCenterState.manifest || FALLBACK_NOTICE_CENTER);
+  const items = manifest.items;
+  const groups = noticeGroups(items);
+  if (!noticeCenterState.selectedId) {
+    noticeCenterState.selectedId = defaultNoticeId(items);
+  }
+  const selected = items.find((item) => item.id === noticeCenterState.selectedId) || items[0];
+  const statusText = noticeSourceStatusText(noticeCenterState.status);
+  const bodyHtml = renderNoticeDocBody(selected);
+  const selectedBadgeClass = selected?.pinned ? 'notice-doc-badge pinned' : 'notice-doc-badge';
+  const selectedTags = selected?.tags || [];
+
+  contentArea.innerHTML = `
+    <section class="notice-hero">
+      <div class="view-panel-header">
+        <div>
+          <div class="notice-source-line">
+            <span>${escapeHtml(statusText)}</span>
+            <span>更新于 ${escapeHtml(manifest.updatedAt || '-')}</span>
+          </div>
+        </div>
+        <div class="notice-hero-actions">
+          <button class="btn-text" data-notice-action="refresh" type="button">刷新</button>
+          <button class="btn-text" data-notice-open="${escapeHtml(GITHUB_BLOB_BASE)}docs/tutorial-announcements.json" type="button">在 GitHub 打开索引</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="notice-layout">
+      <aside class="notice-list">
+        ${renderNoticeListSection('公告', groups.announcements, '暂无公告。')}
+        ${renderNoticeListSection('教程', groups.tutorials, '暂无教程。')}
+      </aside>
+      <article class="notice-document">
+        <header class="notice-document-header">
+          <div>
+            <span class="${selectedBadgeClass}">${escapeHtml(selected ? noticeKindLabel(selected) : '文档')}</span>
+            <h3>${escapeHtml(selected?.title || '暂无内容')}</h3>
+            <p>${escapeHtml(selected?.date ? `${selected.date}${selected.summary ? ' · ' + selected.summary : ''}` : (selected?.summary || ''))}</p>
+            ${selectedTags.length ? `<div class="notice-doc-tags">${selectedTags.map((tag) => `<em>${escapeHtml(tag)}</em>`).join('')}</div>` : ''}
+          </div>
+          ${selected ? `
+            <div class="notice-doc-actions">
+              <button class="btn-text" data-notice-open="${escapeHtml(noticeGitHubUrl(selected))}" type="button">在 GitHub 打开</button>
+            </div>
+          ` : ''}
+        </header>
+        <div class="guide-content notice-doc-content">
+          ${bodyHtml}
+        </div>
+      </article>
+    </section>
+  `;
+  bindNoticeCenterActions(contentArea);
+  if (noticeCenterState.status === 'idle') {
+    loadNoticeCenter(false);
+  } else if (noticeCenterState.status !== 'loading' && selected && !noticeCenterState.selectedBody && noticeCenterState.selectedBodyStatus === 'idle') {
+    loadNoticeItemBody(selected);
+  }
+}
+
 function renderProviderModeSwitcher(provider) {
   const siblings = providerPlatformSiblings(provider);
   if (siblings.length <= 1) return;
@@ -1398,6 +1709,8 @@ function renderAppView(viewId) {
     renderPlatformCenterPage();
   } else if (viewId === 'task-center') {
     renderTaskCenterPage();
+  } else if (viewId === 'notice-center') {
+    renderNoticeCenterPage();
   } else if (viewId === 'settings') {
     renderSettingsPage();
   } else {

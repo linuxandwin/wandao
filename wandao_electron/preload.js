@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fileExists: (filePath) => ipcRenderer.invoke('file-exists', filePath),
   openPath: (targetPath) => ipcRenderer.invoke('open-path', targetPath),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  fetchRemoteText: (url) => ipcRenderer.invoke('fetch-remote-text', url),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   showAbout: () => ipcRenderer.invoke('show-about'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),

@@ -1,102 +1,68 @@
 # Provider 接入说明
 
-从 1.2.0 开始，万能导支持两种 provider：
+万能导支持两类平台接入方式：
 
-- **内置 provider**：仍然由 `wandao_electron/renderer/providers.js` 注册，适合官方长期维护的平台。
-- **文件型 provider**：放在 `providers/<provider-id>/provider.json`，适合社区共创、教程型平台和实验平台。
+- 内置 provider：由主程序维护专属 UI 和专属逻辑，适合飞书导入、语雀导入这类复杂长期功能。
+- 文件型 provider：放在 `providers/<provider-id>/provider.json`，适合社区共创、教程型平台、实验平台和大多数标准导入导出流程。
 
-详细规范见：
+详细开发规范见：
 
 ```text
 docs/插件开发指南.md
 ```
 
-## 为什么这样设计
-
-平台越来越多后，不能要求所有贡献者都理解 Electron UI。新的文件型 provider 把平台接入拆成三层：
-
-- `provider.json`：声明平台信息、表单字段、动作按钮和能力。
-- `README.md`：展示平台教程、限制和人工操作步骤。
-- `export.py` / `import.py`：可选，只有需要自动化时才提供。
-
-这样有的平台可以写脚本自动导出，有的平台可以先提供教程，后续再升级成自动化。
-
-## Provider 类型
-
-```text
-automation：自动化脚本型
-guide：教程说明型
-hybrid：混合型
-```
-
-示例：
-
-```json
-{
-  "id": "notion",
-  "name": "Notion",
-  "type": "guide",
-  "group": "guide",
-  "guide": "README.md"
-}
-```
-
-## 社区插件目录
+## 目录约定
 
 ```text
 providers/
-  _template/
+  _template_standard/
+  _template_custom/
+  _demo_local_export/
   notion/
+  your-provider/
 ```
 
-以下划线开头的目录不会自动加载，可以作为模板或草稿。
+以下划线开头的目录不会自动加载，用来放模板、示例和草稿。真正要展示给用户的平台目录不要以下划线开头。
 
-## UI 生成原则
+## 文件型 provider 三件套
 
-社区 provider 默认不直接写前端代码，而是通过 `fields` 和 `actions` 声明 UI：
-
-```json
-{
-  "fields": [
-    {
-      "name": "output",
-      "label": "输出目录",
-      "type": "directory",
-      "arg": "--output",
-      "required": true
-    }
-  ],
-  "actions": [
-    {
-      "id": "export",
-      "label": "开始导出",
-      "script": "export.py"
-    }
-  ]
-}
+```text
+providers/your-provider/
+  provider.json
+  README.md
+  actions.py
 ```
 
-主程序会自动生成表单和按钮，并把用户输入转换为 Python 命令行参数。
+- `provider.json`：声明平台信息、能力、字段、按钮、目录树协议和脚本入口。
+- `README.md`：展示教程、限制、登录方式、权限要求和测试结果。
+- `actions.py`：可选，执行读取目录、导出、导入、失败重试等动作。
 
-## 复杂平台怎么共创
+如果平台只需要教程，可以只有 `provider.json` 和 `README.md`，并把 `type` 设置为 `guide`。
 
-像飞书导入这种复杂功能，仍然可以共创，但建议分级：
+## 标准 UI 和复杂 UI
 
-- **普通 provider**：只靠 `provider.json` 生成表单和按钮，适合 URL、目录、API Key、简单下拉等场景。
-- **高级 provider**：先用 `actions.updates` 读取空间/知识库/文件夹，再动态回填字段。
-- **官方/复杂 provider**：如果需要多步骤授权、权限排障、动态目录树、图片修复、专属错误处理，可以先贡献 Python 核心脚本和 README，再由维护者接入专属模板。
+标准 UI provider 不需要改 Electron 主程序。贡献者只要声明 `fields` 和 `actions`，主程序会自动生成表单和按钮。
 
-也就是说，插件化不是要求所有平台都只能用一套简单 UI。简单平台不改前端即可共创；复杂平台可以逐步从教程型、脚本型升级为内置复杂 provider。
+复杂平台可以先用 `providers/_template_custom/` 把流程拆成多个动作。当前文件型 provider 不直接注入任意 HTML；如果确实需要专属 UI，请在 PR 中说明 UI 需求，由维护者评估是否升级为内置 provider 或后续沙箱自定义 UI。
+
+这个设计不是要求所有平台长得一样，而是让每个平台只声明自己支持的能力。飞书可以有权限检测和 Wiki 导入，OneNote 可以只有本地读取和 Markdown 导出，教程型平台也可以只展示文档。
 
 ## 已支持的扩展点
 
 - `trustLevel`：标记官方、社区、本地、实验 provider。
+- `status`：标记 experimental、beta、stable。
 - `requirements`：声明 Python、系统和使用依赖。
+- `capabilities`：声明导出、导入、教程、图片、附件、目录树、批量、重试等能力。
 - `toc`：声明通用目录树字段映射，支持读取目录后勾选。
 - `actions.updates`：动作完成后把结果回填到输入框或下拉框。
 
-## 内置平台何时继续用专属模板
+## 贡献建议
 
-如果平台交互非常复杂，例如飞书导入需要权限初始化、目标 Wiki 探测、图片修复等，可以继续保留专属 HTML 模板和专属 JS 逻辑。
+新增平台优先走文件型 provider：
 
-新的文件型 provider 不是要消灭所有特殊 UI，而是让多数平台接入不用再改 Electron 代码。
+1. 平台本身有导出导入能力：先做教程型 provider。
+2. 平台流程比较标准：用 `_template_standard`。
+3. 平台流程很复杂：用 `_template_custom` 提交核心脚本和流程说明。
+4. 标准 UI 不够：在 PR 中说明需要的专属 UI，不要直接把复杂逻辑散落到主程序里。
+
+这样平台能力会集中在自己的目录中，后续维护、审查、回滚和共创都会更清楚。

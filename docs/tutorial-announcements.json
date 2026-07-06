@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "updatedAt": "2026-07-06",
+  "repository": "https://github.com/tllovesxs/wandao",
+  "items": [
+    {
+      "id": "pinned-read-first",
+      "type": "announcement",
+      "pinned": true,
+      "title": "使用前请先看：万能导的使用边界",
+      "summary": "万能导只处理你有权限访问和迁移的内容。遇到平台权限、登录过期、接口限制时，请先看这篇说明。",
+      "date": "2026-07-06",
+      "badge": "置顶",
+      "tags": ["必读", "权限"],
+      "path": "docs/announcements/pinned-read-first.md"
+    },
+    {
+      "id": "provider-co-creation-invite",
+      "type": "announcement",
+      "title": "万能导共创邀请：一起接入更多平台",
+      "summary": "万能导正在开放 provider 共创机制，欢迎从教程、脚本、失败排查或新平台接入开始参与。",
+      "date": "2026-07-06",
+      "badge": "共创",
+      "tags": ["公告", "共创", "Provider"],
+      "path": "docs/announcements/provider-co-creation-invite.md"
+    },
+    {
+      "id": "release-1-2-0",
+      "type": "announcement",
+      "title": "1.2.0：平台中心和语雀导入优化",
+      "summary": "新增平台中心架构，优化语雀导入的图片识别、失败重试、计划报告和上传稳定性。",
+      "date": "2026-07-06",
+      "badge": "最新",
+      "tags": ["版本更新", "语雀"],
+      "path": "docs/announcements/release-1.2.0.md"
+    },
+    {
+      "id": "yuque-import-guide",
+      "type": "tutorial",
+      "title": "语雀 Markdown 导入排查指南",
+      "summary": "解释生成计划、缺失图片、远程图片、失败重试和导入报告怎么看。",
+      "date": "2026-07-06",
+      "tags": ["教程", "语雀导入"],
+      "path": "docs/tutorials/yuque-import-troubleshooting.md"
+    },
+    {
+      "id": "provider-contribution-guide",
+      "type": "tutorial",
+      "title": "平台共创：Provider 接入说明",
+      "summary": "想给万能导增加新平台，可以从 provider 说明和插件结构开始。",
+      "date": "2026-07-06",
+      "tags": ["教程", "共创"],
+      "path": "docs/Provider接入说明.md"
+    },
+    {
+      "id": "provider-ai-prompt",
+      "type": "tutorial",
+      "title": "平台共创：AI 通用提示词",
+      "summary": "给使用 AI 编程工具的共创者准备的通用提示词，可直接复制后填写平台信息。",
+      "date": "2026-07-06",
+      "tags": ["教程", "共创", "AI"],
+      "path": "docs/tutorials/provider-ai-prompt.md"
+    },
+    {
+      "id": "project-learning-ai-prompt",
+      "type": "tutorial",
+      "title": "AI 辅助学习：项目学习导师提示词",
+      "summary": "把导出的教学文档和源码放在一起，让 AI 像项目学习导师一样带你理解业务流程、核心代码和技术取舍。",
+      "date": "2026-07-06",
+      "tags": ["教程", "AI", "项目学习", "提示词"],
+      "path": "prompts/项目学习导师提示词.md"
+    }
+  ]
+}

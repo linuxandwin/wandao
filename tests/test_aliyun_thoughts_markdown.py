@@ -1,6 +1,8 @@
 import unittest
+import tempfile
+from pathlib import Path
 
-from export_aliyun_thoughts import slate_value_to_markdown
+from export_aliyun_thoughts import Node, build_paths, ensure_document_parent_dirs, slate_value_to_markdown
 
 
 def text_node(text: str) -> dict:
@@ -56,6 +58,22 @@ class AliyunThoughtsMarkdownTests(unittest.TestCase):
         markdown = slate_value_to_markdown(value, "demo")["markdown"]
 
         self.assertIn("```text\n第一行\n\n第三行\n```", markdown)
+
+    def test_selected_export_only_creates_selected_parent_folders(self) -> None:
+        nodes = [
+            Node("folder-1", "01-应该导出", "folder", None, 1, {}),
+            Node("doc-1", "文档 A", "document", "folder-1", 1, {}),
+            Node("folder-2", "02-不应该导出", "folder", None, 2, {}),
+            Node("doc-2", "文档 B", "document", "folder-2", 1, {}),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            _folder_paths, planned_doc_paths, _children, _root_items = build_paths(nodes, output)
+
+            ensure_document_parent_dirs([nodes[1]], planned_doc_paths, output)
+
+            self.assertTrue((output / "01-01-应该导出").exists())
+            self.assertFalse((output / "02-02-不应该导出").exists())
 
 
 if __name__ == "__main__":

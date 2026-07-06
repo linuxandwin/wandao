@@ -443,6 +443,57 @@ function fetchJson(url) {
   });
 }
 
+function isAllowedRemoteTextUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    if (parsed.protocol !== 'https:') return false;
+    if (parsed.hostname === 'raw.githubusercontent.com') {
+      return parsed.pathname.startsWith('/tllovesxs/wandao/');
+    }
+    if (parsed.hostname === 'github.com') {
+      return parsed.pathname.startsWith('/tllovesxs/wandao/');
+    }
+    return false;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function fetchText(url) {
+  if (!isAllowedRemoteTextUrl(url)) {
+    return Promise.reject(new Error('只允许读取万能导 GitHub 仓库中的公告和教程文档'));
+  }
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        Accept: 'text/plain, application/json, text/markdown, */*',
+        'User-Agent': 'wandao-docs-center'
+      },
+      timeout: 12000
+    }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 1024 * 1024) {
+          request.destroy(new Error('公告文档超过 1MB，已停止读取'));
+        }
+      });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`GitHub 返回 HTTP ${response.statusCode}`));
+          return;
+        }
+        resolve(body);
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error('读取 GitHub 文档超时'));
+    });
+    request.on('error', reject);
+  });
+}
+
 async function checkForUpdates() {
   const release = await fetchJson(PROJECT_INFO.latestReleaseApi);
   const latestVersion = String(release.tag_name || '').replace(/^v/i, '') || '0.0.0';
@@ -606,6 +657,15 @@ ipcMain.handle('save-file', async (event, options) => {
   });
 
   return result.canceled ? null : result.filePath;
+});
+
+ipcMain.handle('fetch-remote-text', async (event, url) => {
+  try {
+    const content = await fetchText(url);
+    return { success: true, content };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
 });
 
 ipcMain.handle('run-python-command', async (event, scriptName, args, options = {}) => {
