@@ -21,6 +21,8 @@ const PROJECT_INFO = {
 };
 
 const APP_ID = 'com.wandao.app';
+const SETTINGS_FILE = 'settings.json';
+const BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 
 function resolveAppAsset(fileName) {
   const candidates = uniquePaths([
@@ -86,6 +88,286 @@ function uniquePaths(paths) {
     result.push(normalized);
   }
   return result;
+}
+
+function expandHomePath(value) {
+  const raw = String(value || '').trim();
+  if (!raw.startsWith('~')) return raw;
+  const home = app.getPath('home') || process.env.USERPROFILE || process.env.HOME || '';
+  if (!home) return raw;
+  if (raw === '~') return home;
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) {
+    return path.join(home, raw.slice(2));
+  }
+  return raw;
+}
+
+function isPathLike(value) {
+  const raw = String(value || '');
+  return path.isAbsolute(raw) || raw.startsWith('~') || raw.includes('/') || raw.includes('\\');
+}
+
+function isExecutableFile(filePath) {
+  try {
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  } catch (_error) {
+    return false;
+  }
+}
+
+function findExecutableOnPath(command) {
+  const raw = String(command || '').trim();
+  if (!raw) return '';
+  if (isPathLike(raw)) {
+    const resolved = path.resolve(expandHomePath(raw));
+    return isExecutableFile(resolved) ? resolved : '';
+  }
+
+  const pathEntries = String(process.env.PATH || '')
+    .split(path.delimiter)
+    .filter(Boolean);
+  const extensions = process.platform === 'win32'
+    ? String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM')
+      .split(';')
+      .filter(Boolean)
+    : [''];
+  const names = process.platform === 'win32' && !path.extname(raw)
+    ? [raw, ...extensions.map((extension) => `${raw}${extension}`)]
+    : [raw];
+
+  for (const dir of pathEntries) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (isExecutableFile(candidate)) {
+        return path.resolve(candidate);
+      }
+    }
+  }
+  return '';
+}
+
+function normalizeBrowserExecutable(browserPath) {
+  const raw = String(browserPath || '').trim();
+  if (!raw) return '';
+  if (!isPathLike(raw)) {
+    return findExecutableOnPath(raw);
+  }
+
+  const resolved = path.resolve(expandHomePath(raw));
+  if (process.platform === 'darwin' && resolved.toLowerCase().endsWith('.app')) {
+    const appName = path.basename(resolved, '.app');
+    const executableNames = uniquePaths([
+      path.join(resolved, 'Contents', 'MacOS', appName),
+      path.join(resolved, 'Contents', 'MacOS', appName.replace(/\s+Browser$/i, '')),
+      path.join(resolved, 'Contents', 'MacOS', 'Google Chrome'),
+      path.join(resolved, 'Contents', 'MacOS', 'Microsoft Edge'),
+      path.join(resolved, 'Contents', 'MacOS', 'Chromium'),
+      path.join(resolved, 'Contents', 'MacOS', 'Brave Browser')
+    ]);
+    const match = executableNames.find(isExecutableFile);
+    return match || '';
+  }
+
+  return isExecutableFile(resolved) ? resolved : '';
+}
+
+function browserCandidateSpecs() {
+  const home = app.getPath('home') || process.env.USERPROFILE || process.env.HOME || '';
+  if (process.platform === 'win32') {
+    const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
+    const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+    const localAppData = process.env.LOCALAPPDATA || '';
+    return [
+      {
+        id: 'chrome',
+        name: 'Google Chrome',
+        paths: [
+          path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          localAppData && path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe')
+        ],
+        commands: ['chrome', 'chrome.exe', 'google-chrome']
+      },
+      {
+        id: 'edge',
+        name: 'Microsoft Edge',
+        paths: [
+          path.join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          path.join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          localAppData && path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+        ],
+        commands: ['msedge', 'msedge.exe']
+      },
+      {
+        id: 'chromium',
+        name: 'Chromium',
+        paths: [
+          path.join(programFiles, 'Chromium', 'Application', 'chrome.exe'),
+          path.join(programFilesX86, 'Chromium', 'Application', 'chrome.exe'),
+          localAppData && path.join(localAppData, 'Chromium', 'Application', 'chrome.exe')
+        ],
+        commands: ['chromium', 'chromium.exe']
+      },
+      {
+        id: 'brave',
+        name: 'Brave',
+        paths: [
+          path.join(programFiles, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+          path.join(programFilesX86, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+          localAppData && path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe')
+        ],
+        commands: ['brave', 'brave.exe']
+      }
+    ];
+  }
+
+  if (process.platform === 'darwin') {
+    const applicationRoots = uniquePaths([
+      '/Applications',
+      home && path.join(home, 'Applications')
+    ]);
+    const appPath = (root, appName, executableName) => (
+      root ? path.join(root, appName, 'Contents', 'MacOS', executableName) : ''
+    );
+    return [
+      {
+        id: 'chrome',
+        name: 'Google Chrome',
+        paths: applicationRoots.map((root) => appPath(root, 'Google Chrome.app', 'Google Chrome')),
+        commands: []
+      },
+      {
+        id: 'edge',
+        name: 'Microsoft Edge',
+        paths: applicationRoots.map((root) => appPath(root, 'Microsoft Edge.app', 'Microsoft Edge')),
+        commands: []
+      },
+      {
+        id: 'chromium',
+        name: 'Chromium',
+        paths: applicationRoots.map((root) => appPath(root, 'Chromium.app', 'Chromium')),
+        commands: []
+      },
+      {
+        id: 'brave',
+        name: 'Brave',
+        paths: applicationRoots.map((root) => appPath(root, 'Brave Browser.app', 'Brave Browser')),
+        commands: []
+      }
+    ];
+  }
+
+  return [
+    {
+      id: 'chrome',
+      name: 'Google Chrome',
+      paths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/opt/google/chrome/chrome'],
+      commands: ['google-chrome', 'google-chrome-stable', 'chrome']
+    },
+    {
+      id: 'edge',
+      name: 'Microsoft Edge',
+      paths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'],
+      commands: ['microsoft-edge', 'microsoft-edge-stable']
+    },
+    {
+      id: 'chromium',
+      name: 'Chromium',
+      paths: ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'],
+      commands: ['chromium', 'chromium-browser']
+    },
+    {
+      id: 'brave',
+      name: 'Brave',
+      paths: ['/usr/bin/brave-browser', '/snap/bin/brave'],
+      commands: ['brave-browser', 'brave']
+    }
+  ];
+}
+
+function detectBrowsers() {
+  const browsers = [];
+  const seen = new Set();
+  const pushBrowser = (spec, browserPath, source) => {
+    const normalized = normalizeBrowserExecutable(browserPath);
+    if (!normalized) return;
+    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return;
+    seen.add(key);
+    browsers.push({
+      id: spec.id,
+      name: spec.name,
+      path: normalized,
+      source
+    });
+  };
+
+  for (const spec of browserCandidateSpecs()) {
+    for (const candidatePath of spec.paths || []) {
+      pushBrowser(spec, candidatePath, '默认安装位置');
+    }
+    for (const command of spec.commands || []) {
+      const executable = findExecutableOnPath(command);
+      if (executable) {
+        pushBrowser(spec, executable, 'PATH');
+      }
+    }
+  }
+  return browsers;
+}
+
+function appSettingsPath() {
+  return path.join(app.getPath('userData'), SETTINGS_FILE);
+}
+
+function readAppSettings() {
+  try {
+    const filePath = appSettingsPath();
+    if (!fs.existsSync(filePath)) return {};
+    const settings = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    return settings && typeof settings === 'object' ? settings : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeAppSettings(settings) {
+  fs.mkdirSync(app.getPath('userData'), { recursive: true });
+  fs.writeFileSync(appSettingsPath(), JSON.stringify(settings || {}, null, 2), 'utf-8');
+}
+
+function publicAppSettings(settings = readAppSettings()) {
+  return {
+    browserPath: settings.browserPath || '',
+    updatedAt: settings.updatedAt || ''
+  };
+}
+
+function selectedBrowserPath() {
+  const settings = readAppSettings();
+  const configured = normalizeBrowserExecutable(settings.browserPath || '');
+  return configured || '';
+}
+
+function saveAppSettings(update) {
+  const next = {
+    ...readAppSettings()
+  };
+  if (Object.prototype.hasOwnProperty.call(update || {}, 'browserPath')) {
+    const rawBrowserPath = String(update.browserPath || '').trim();
+    if (rawBrowserPath) {
+      const browserPath = normalizeBrowserExecutable(rawBrowserPath);
+      if (!browserPath) {
+        return { success: false, error: '没有找到这个浏览器文件，请选择 Chrome、Edge 或 Chromium 的可执行文件。' };
+      }
+      next.browserPath = browserPath;
+    } else {
+      delete next.browserPath;
+    }
+  }
+  next.updatedAt = new Date().toISOString();
+  writeAppSettings(next);
+  return { success: true, settings: publicAppSettings(next) };
 }
 
 function providerRoots() {
@@ -266,6 +548,10 @@ function pythonEnv() {
     PYTHONUTF8: '1',
     WANDAO_DATA_DIR: app.getPath('userData')
   };
+  const browserPath = selectedBrowserPath();
+  if (browserPath) {
+    env.WANDAO_BROWSER = browserPath;
+  }
   const bundledPython = bundledPythonInfo();
   if (bundledPython) {
     const binDir = process.platform === 'win32' ? bundledPython.root : path.join(bundledPython.root, 'bin');
@@ -649,6 +935,31 @@ ipcMain.handle('select-file', async (event, options) => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle('select-browser-file', async () => {
+  const properties = process.platform === 'darwin'
+    ? ['openFile', 'openDirectory', 'treatPackageAsDirectory']
+    : ['openFile'];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties,
+    title: '选择浏览器',
+    filters: process.platform === 'win32'
+      ? [
+        { name: '浏览器可执行文件', extensions: ['exe'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+      : []
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { success: false, canceled: true };
+  }
+  const browserPath = normalizeBrowserExecutable(result.filePaths[0]);
+  if (!browserPath) {
+    return { success: false, error: '请选择 Chrome、Edge 或 Chromium 的可执行文件。' };
+  }
+  return { success: true, path: browserPath };
+});
+
 ipcMain.handle('save-file', async (event, options) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     title: options?.title || '保存文件',
@@ -800,6 +1111,29 @@ ipcMain.handle('check-for-updates', async () => {
   } catch (error) {
     return { success: false, error: error.message || String(error) };
   }
+});
+
+ipcMain.handle('get-app-settings', async () => {
+  return { success: true, settings: publicAppSettings() };
+});
+
+ipcMain.handle('save-app-settings', async (event, update) => {
+  const result = saveAppSettings(update || {});
+  if (!result.success) return result;
+  return {
+    ...result,
+    browsers: detectBrowsers(),
+    downloadUrl: BROWSER_DOWNLOAD_URL
+  };
+});
+
+ipcMain.handle('detect-browsers', async () => {
+  return {
+    success: true,
+    browsers: detectBrowsers(),
+    selectedBrowserPath: selectedBrowserPath(),
+    downloadUrl: BROWSER_DOWNLOAD_URL
+  };
 });
 
 ipcMain.handle('get-provider-manifests', async () => {

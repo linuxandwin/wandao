@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 文件对话框
   selectDirectory: (options) => ipcRenderer.invoke('select-directory', options),
   selectFile: (options) => ipcRenderer.invoke('select-file', options),
+  selectBrowserFile: () => ipcRenderer.invoke('select-browser-file'),
   saveFile: (options) => ipcRenderer.invoke('save-file', options),
 
   // Python 命令执行
@@ -22,6 +23,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   showAbout: () => ipcRenderer.invoke('show-about'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  getAppSettings: () => ipcRenderer.invoke('get-app-settings'),
+  saveAppSettings: (settings) => ipcRenderer.invoke('save-app-settings', settings),
+  detectBrowsers: () => ipcRenderer.invoke('detect-browsers'),
   getProviderManifests: () => ipcRenderer.invoke('get-provider-manifests'),
 
   // 应用路径

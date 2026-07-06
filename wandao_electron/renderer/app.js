@@ -12,6 +12,7 @@ const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/';
 const GITHUB_BLOB_BASE = 'https://github.com/tllovesxs/wandao/blob/main/';
 const NOTICE_CENTER_MANIFEST_URL = `${GITHUB_RAW_BASE}docs/tutorial-announcements.json`;
+const DEFAULT_BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 const FALLBACK_NOTICE_CENTER = {
   version: 1,
   updatedAt: '2026-07-06',
@@ -134,6 +135,13 @@ let noticeCenterState = {
   selectedBodyError: '',
   error: ''
 };
+let appSettingsState = {
+  settings: {},
+  browsers: [],
+  browserDetectStatus: 'idle',
+  browserDetectError: '',
+  browserDownloadUrl: DEFAULT_BROWSER_DOWNLOAD_URL
+};
 const MAX_LOG_ENTRIES = 2000;
 const userLogEntries = [];
 const detailLogEntries = [];
@@ -165,6 +173,12 @@ const ERROR_RULES = [
     pattern: /(未登录|登录失效|登录已失效|重新登录|登录凭证|没有可用.*凭证|没有可用.*cookie|cookie 中缺少|login required|please login|auth file|cookie|cookies|401|unauthorized|会话|凭证.*失效)/i,
     title: '登录状态可能已失效',
     suggestion: '请重新点击“登录并保存凭证”，确认浏览器中能正常打开目标页面后再继续。'
+  },
+  {
+    category: '浏览器自动化启动失败',
+    pattern: /(Chrome remote debugging port|remote debugging port|DevTools|debug port|9222|Chrome\/Edge executable was not found|browser executable|WANDAO_BROWSER|找不到.*Chrome|没有找到.*浏览器|浏览器.*调试)/i,
+    title: '没有成功连接到可控制的浏览器',
+    suggestion: '请到“设置 > 自动化浏览器”检测并选择 Chrome、Edge 或 Chromium；如果浏览器已打开但仍失败，请关闭后重试。'
   },
   {
     category: '目标平台 API 权限不足',
@@ -1530,11 +1544,243 @@ function renderPlatformDetailPage(key) {
   bindWorkbenchActions(contentArea);
 }
 
+function normalizePathKey(value) {
+  const text = String(value || '').trim();
+  return navigator.platform.toLowerCase().includes('win') ? text.toLowerCase() : text;
+}
+
+function browserNameFromPath(browserPath) {
+  const text = String(browserPath || '');
+  const lower = text.toLowerCase();
+  if (lower.includes('msedge') || lower.includes('microsoft edge')) return 'Microsoft Edge';
+  if (lower.includes('chromium')) return 'Chromium';
+  if (lower.includes('brave')) return 'Brave';
+  if (lower.includes('chrome')) return 'Google Chrome';
+  return '自定义浏览器';
+}
+
+function browserOptionLabel(browser) {
+  const source = browser.source ? ` · ${browser.source}` : '';
+  return `${browser.name || browserNameFromPath(browser.path)}${source}`;
+}
+
+function browserStatusText() {
+  const count = appSettingsState.browsers.length;
+  const status = appSettingsState.browserDetectStatus;
+  if (status === 'loading') return '检测中';
+  if (status === 'success') return `已检测到 ${count} 个`;
+  if (status === 'empty') return '未检测到';
+  if (status === 'error') return '检测失败';
+  return '未检测';
+}
+
+function browserStatusClass() {
+  const status = appSettingsState.browserDetectStatus;
+  if (status === 'success') return 'success';
+  if (status === 'empty' || status === 'error') return 'warning';
+  if (status === 'loading') return 'loading';
+  return '';
+}
+
+function selectedBrowserPathForSettings() {
+  return appSettingsState.settings?.browserPath || '';
+}
+
+function browserSelectionSummary() {
+  const selected = selectedBrowserPathForSettings();
+  if (selected) {
+    return `当前固定使用：${browserNameFromPath(selected)}`;
+  }
+  const firstBrowser = appSettingsState.browsers[0];
+  if (firstBrowser) {
+    return `当前使用：自动检测，优先使用 ${firstBrowser.name}`;
+  }
+  if (appSettingsState.browserDetectStatus === 'empty') {
+    return '当前使用：自动检测，但还没有发现可用浏览器。';
+  }
+  return '当前使用：自动检测。';
+}
+
+function renderBrowserOptions() {
+  const selected = selectedBrowserPathForSettings();
+  const selectedKey = normalizePathKey(selected);
+  const seen = new Set(['']);
+  const options = [
+    `<option value=""${selected ? '' : ' selected'}>自动检测（推荐）</option>`
+  ];
+  for (const browser of appSettingsState.browsers) {
+    const browserPath = browser.path || '';
+    const key = normalizePathKey(browserPath);
+    if (!browserPath || seen.has(key)) continue;
+    seen.add(key);
+    options.push(
+      `<option value="${escapeHtml(browserPath)}"${key === selectedKey ? ' selected' : ''}>${escapeHtml(browserOptionLabel(browser))}</option>`
+    );
+  }
+  if (selected && !seen.has(selectedKey)) {
+    options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${browserNameFromPath(selected)} · 手动选择`)}</option>`);
+  }
+  return options.join('');
+}
+
+function renderBrowserList() {
+  if (appSettingsState.browserDetectStatus === 'idle') {
+    return '<div class="settings-browser-note">打开设置后会自动检测本机可用浏览器，也可以点击下方按钮重新检测。</div>';
+  }
+  if (appSettingsState.browserDetectStatus === 'loading') {
+    return '<div class="settings-browser-note">正在检测 Chrome、Edge、Chromium 等可用浏览器...</div>';
+  }
+  if (appSettingsState.browserDetectStatus === 'error') {
+    return `<div class="settings-browser-note warning">${escapeHtml(appSettingsState.browserDetectError || '检测失败，请稍后重试。')}</div>`;
+  }
+  if (!appSettingsState.browsers.length) {
+    return `
+      <div class="setup-card warning">
+        <strong>没有检测到可用浏览器</strong>
+        <p>请安装 Chrome、Edge 或 Chromium 后重新检测，也可以手动选择浏览器可执行文件。</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="browser-list">
+      ${appSettingsState.browsers.map((browser) => `
+        <div class="browser-option">
+          <strong>${escapeHtml(browser.name)}</strong>
+          <span>${escapeHtml(browser.source || '已检测')}</span>
+          <code>${escapeHtml(browser.path)}</code>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function loadAppSettings() {
+  if (!window.electronAPI.getAppSettings) return;
+  try {
+    const result = await window.electronAPI.getAppSettings();
+    if (result?.success) {
+      appSettingsState.settings = result.settings || {};
+    }
+  } catch (error) {
+    appendDetailedLog('settings', 'error', formatError(error));
+  }
+}
+
+async function detectAvailableBrowsers(options = {}) {
+  if (!window.electronAPI.detectBrowsers || appSettingsState.browserDetectStatus === 'loading') return;
+  const silent = Boolean(options.silent);
+  appSettingsState.browserDetectStatus = 'loading';
+  appSettingsState.browserDetectError = '';
+  if (!silent) log('正在检测可用浏览器...', 'info');
+  if (currentTool === 'settings') renderSettingsPage();
+  try {
+    const result = await window.electronAPI.detectBrowsers();
+    if (!result?.success) {
+      throw new Error(result?.error || '检测浏览器失败');
+    }
+    appSettingsState.browsers = result.browsers || [];
+    appSettingsState.browserDownloadUrl = result.downloadUrl || DEFAULT_BROWSER_DOWNLOAD_URL;
+    if (!selectedBrowserPathForSettings() && result.selectedBrowserPath) {
+      appSettingsState.settings.browserPath = result.selectedBrowserPath;
+    }
+    appSettingsState.browserDetectStatus = appSettingsState.browsers.length ? 'success' : 'empty';
+    if (!silent) {
+      const count = appSettingsState.browsers.length;
+      log(count ? `已检测到 ${count} 个可用浏览器。` : '未检测到可用浏览器，请安装 Chrome 或手动选择浏览器。', count ? 'success' : 'warn');
+    }
+  } catch (error) {
+    appSettingsState.browserDetectStatus = 'error';
+    appSettingsState.browserDetectError = formatError(error);
+    if (!silent) log(`检测浏览器失败：${appSettingsState.browserDetectError}`, 'error');
+  } finally {
+    if (currentTool === 'settings') renderSettingsPage();
+  }
+}
+
+async function saveBrowserSetting(browserPath) {
+  if (!window.electronAPI.saveAppSettings) {
+    alert('当前版本暂不支持保存浏览器设置。');
+    return;
+  }
+  const button = document.getElementById('settings-browser-save');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '保存中...';
+  }
+  try {
+    const result = await window.electronAPI.saveAppSettings({ browserPath });
+    if (!result?.success) {
+      throw new Error(result?.error || '保存失败');
+    }
+    appSettingsState.settings = result.settings || {};
+    appSettingsState.browsers = result.browsers || appSettingsState.browsers;
+    appSettingsState.browserDownloadUrl = result.downloadUrl || appSettingsState.browserDownloadUrl;
+    log(browserPath ? `已保存自动化浏览器：${browserNameFromPath(browserPath)}` : '已恢复为自动检测浏览器。', 'success');
+  } catch (error) {
+    log(`保存浏览器设置失败：${formatError(error)}`, 'error');
+    alert(`保存失败：${formatError(error)}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '保存选择';
+    }
+    if (currentTool === 'settings') renderSettingsPage();
+  }
+}
+
+async function chooseBrowserFile() {
+  let browserPath = '';
+  if (window.electronAPI.selectBrowserFile) {
+    const result = await window.electronAPI.selectBrowserFile();
+    if (!result || result.canceled) return;
+    if (!result.success) {
+      const message = result.error || '没有选择可用浏览器。';
+      log(message, 'error');
+      alert(message);
+      return;
+    }
+    browserPath = result.path || '';
+  } else {
+    browserPath = await window.electronAPI.selectFile({
+      title: '选择浏览器可执行文件',
+      filters: [{ name: '浏览器可执行文件', extensions: ['exe', '*'] }]
+    });
+  }
+  if (browserPath) {
+    await saveBrowserSetting(browserPath);
+  }
+}
+
 function renderSettingsPage() {
   setTaskHistoryVisible(false);
-  setToolHeading('设置', '调整显示、更新和日志偏好。');
+  setToolHeading('设置', '调整显示、更新、日志和浏览器自动化偏好。');
   const contentArea = document.getElementById('content-area');
   contentArea.innerHTML = `
+    <section class="settings-grid">
+      <article class="home-card settings-card-wide">
+        <div class="settings-card-head">
+          <div>
+            <h4>自动化浏览器</h4>
+            <p>登录、读取网页目录和部分平台导出需要调用 Chrome、Edge 或 Chromium。</p>
+          </div>
+          <span class="settings-status ${browserStatusClass()}">${escapeHtml(browserStatusText())}</span>
+        </div>
+        <div class="form-group">
+          <label for="settings-browser-select">使用哪个浏览器</label>
+          <select id="settings-browser-select">
+            ${renderBrowserOptions()}
+          </select>
+          <p class="field-hint">${escapeHtml(browserSelectionSummary())}</p>
+        </div>
+        ${renderBrowserList()}
+        <div class="settings-actions">
+          <button class="btn-secondary" data-settings-action="detect-browser" type="button">检测可用浏览器</button>
+          <button class="btn-primary" id="settings-browser-save" data-settings-action="save-browser" type="button">保存选择</button>
+          <button class="btn-secondary" data-settings-action="choose-browser" type="button">手动选择浏览器</button>
+          <button class="btn-text" data-settings-action="download-browser" type="button">下载 Chrome</button>
+        </div>
+      </article>
+    </section>
     <section class="settings-grid">
       <article class="home-card">
         <h4>显示模式</h4>
@@ -1558,6 +1804,22 @@ function renderSettingsPage() {
       </article>
     </section>
   `;
+  if (appSettingsState.browserDetectStatus === 'idle') {
+    window.setTimeout(() => detectAvailableBrowsers({ silent: true }), 0);
+  }
+  contentArea.querySelector('[data-settings-action="detect-browser"]')?.addEventListener('click', () => {
+    detectAvailableBrowsers({ silent: false });
+  });
+  contentArea.querySelector('[data-settings-action="save-browser"]')?.addEventListener('click', () => {
+    const browserPath = document.getElementById('settings-browser-select')?.value || '';
+    saveBrowserSetting(browserPath);
+  });
+  contentArea.querySelector('[data-settings-action="choose-browser"]')?.addEventListener('click', () => {
+    chooseBrowserFile();
+  });
+  contentArea.querySelector('[data-settings-action="download-browser"]')?.addEventListener('click', () => {
+    window.electronAPI.openExternal(appSettingsState.browserDownloadUrl || DEFAULT_BROWSER_DOWNLOAD_URL);
+  });
   contentArea.querySelector('[data-settings-action="theme"]')?.addEventListener('click', () => {
     toggleTheme();
     renderSettingsPage();
@@ -4180,6 +4442,7 @@ function initializeFeishuImportHandlers() {
 // Initialize app
 document.addEventListener('DOMContentLoaded', async () => {
   applyTheme(loadTheme());
+  await loadAppSettings();
   try {
     await loadProviderManifests();
   } catch (error) {
