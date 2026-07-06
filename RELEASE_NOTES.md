@@ -1,33 +1,54 @@
-# Wandao 1.1.3 Release Notes
+# Wandao 1.2.0 Release Notes
 
-## 修复
+本次版本是一次架构升级，重点是让万能导更适合开源共创：新增文件型 provider 插件机制，支持教程型平台、混合型平台和社区自动化脚本。
 
-- 修复知识星球导出时，部分文章代码块前会混入网页工具栏文字的问题。
-- 典型表现为代码块前出现类似 `textjavascripttypescript...yaml Copy` 的异常文本。
-- 导出器现在会在浏览器解析阶段跳过代码块工具栏，并在写入 Markdown 前再次清洗残留工具栏行。
+## 新增
 
-## 改进
+- 新增 `providers/` 插件目录。
+- 新增文件型 provider manifest：`provider.json`。
+- 新增教程型 provider：平台可以只提供 `README.md`，不必写脚本。
+- 新增混合型 provider：同一个平台可以同时展示教程和自动化动作。
+- 新增通用目录树协议：社区 provider 可返回标准 `nodes`，由 UI 自动渲染勾选树。
+- 新增动态动作回填：动作结果可自动更新输入框或下拉框。
+- 新增 provider 依赖声明：可展示 Python、系统和使用依赖。
+- 新增 provider 信任等级：官方、社区、本地、实验等来源会在界面展示。
+- 新增平台中心入口，平台能力按卡片集中展示。
+- 新增 Notion 迁移指南示例 provider。
+- 新增社区插件模板：`providers/_template/`。
+- 新增插件开发文档：`docs/插件开发指南.md`。
+- 应用头部新增万能导 Logo 展示，品牌识别更清晰。
 
-- 知识星球代码块提取更稳定，优先读取真实 `code` 或 `textarea` 内容，减少页面 UI 文本混入正文。
-- 保留原有多层链接导出、评论区导出、图片本地化和增量导出逻辑。
+## 架构改进
 
-## 验证
+- Electron 主进程支持自动发现 `providers/*/provider.json`。
+- 打包后会把 `providers/` 一起放入应用资源。
+- 渲染进程支持从 manifest 自动生成表单字段和动作按钮。
+- provider 字段支持 `text`、`password`、`number`、`textarea`、`directory`、`file`、`checkbox`、`select`、`notice`。
+- provider 动作支持 `kind: "scan"`，用于读取目录并自动填充目录选择器。
+- provider 动作支持 `updates`，用于把脚本返回值写回表单。
+- 社区插件脚本使用 `provider:<id>:<script>` 形式执行，并限制脚本只能位于自己的 provider 目录内。
+- 保留现有内置 provider 和专属复杂 UI，避免影响已有平台。
 
-- 已执行 `python -m py_compile export_zsxq.py`。
-- 已用反馈样例验证：代码块前的工具栏乱码会被删除，代码内容正常保留。
-- 已执行 `git diff --check`。
-- 已确认 `wandao_electron/package.json`、`wandao_electron/package-lock.json`、`pyproject.toml` 版本号为 `1.1.3`。
+## 文档
 
-## 下载
+- 重写 `docs/Provider接入说明.md`，说明内置 provider 与文件型 provider 的关系。
+- README 新增插件开发入口。
+- README 新增平台中心和插件开发入口说明。
+- README 和使用教程补充 OneNote 导出、为知笔记导出说明。
+- 贡献指南补充 AGPL 协议说明和 provider PR 规则。
 
-- Windows 安装版：下载 `Wandao Setup 1.1.3.exe`。
-- Windows 免安装版：下载 `Wandao 1.1.3.exe`。
-- macOS Apple Silicon：下载 `Wandao-1.1.3-arm64-mac.zip`，适合 M1 / M2 / M3 / M4 芯片 Mac。
-- macOS Intel：本次不默认提供自动构建包，Intel 芯片 Mac 用户可以先使用源码方式运行。
+## 协议
+
+- 项目开源协议调整为 AGPL-3.0-only。
+- Python 项目元数据、Electron 项目元数据和 LICENSE 文件已同步更新。
+
+## 版本
+
+- 桌面端版本升级到 `1.2.0`。
+- Python 项目版本升级到 `1.2.0`。
 
 ## 注意
 
-- 普通用户请优先下载发行版，发行版内置 Python 运行时，不需要额外安装 Python。
-- 源码运行可以直接使用项目根目录的 `start-wandao.cmd` 或 `start-wandao.sh`。
-- 请只处理自己有权限访问的内容，并遵守目标平台服务条款和版权要求。
-- 请勿在 Issue、PR、截图或日志里提交 Cookie、账号密码、App Secret、Token、API Key 等敏感信息。
+- 社区 provider 的 Python 脚本会在用户本机执行，请只安装可信来源的插件。
+- 教程型 provider 不执行脚本，只展示 Markdown 操作说明。
+- 复杂平台仍可继续使用内置专属模板，不强制所有平台使用统一表单。

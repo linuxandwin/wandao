@@ -57,6 +57,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR
@@ -551,7 +555,29 @@ def js_string(value: str) -> str:
 
 def page_fetch_json(cdp: CDPClient, url: str, args: argparse.Namespace | None = None) -> Any:
     throttle_request(args)
-    expression = f"fetch({js_string(url)}).then(r => r.json())"
+    expression = f"""
+new Promise((resolve, reject) => {{
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", {js_string(url)}, true);
+  xhr.withCredentials = true;
+  xhr.setRequestHeader("Accept", "application/json, text/plain, */*");
+  xhr.onload = () => {{
+    if (xhr.status < 200 || xhr.status >= 300) {{
+      reject(new Error("HTTP " + xhr.status + ": " + xhr.responseText.slice(0, 300)));
+      return;
+    }}
+    try {{
+      resolve(JSON.parse(xhr.responseText));
+    }} catch (error) {{
+      reject(error);
+    }}
+  }};
+  xhr.onerror = () => reject(new Error("XMLHttpRequest failed"));
+  xhr.ontimeout = () => reject(new Error("XMLHttpRequest timed out"));
+  xhr.timeout = 60000;
+  xhr.send();
+}})
+"""
     return cdp.evaluate(expression, timeout=60)
 
 
@@ -986,6 +1012,34 @@ def slate_text(node: dict[str, Any]) -> str:
     return "".join(slate_text(child) for child in node.get("nodes") or [])
 
 
+def slate_code_text(node: dict[str, Any]) -> str:
+    """Extract code text while preserving Slate code-line boundaries."""
+    if node.get("object") == "text":
+        return "".join(str(leaf.get("text") or "") for leaf in node.get("leaves") or [])
+
+    children = [child for child in node.get("nodes") or [] if isinstance(child, dict)]
+    if not children:
+        return ""
+
+    parts = [slate_code_text(child) for child in children]
+    if any(is_slate_line_node(child) for child in children):
+        return "\n".join(part.rstrip("\r\n") for part in parts)
+    return "".join(parts)
+
+
+def is_slate_line_node(node: dict[str, Any]) -> bool:
+    node_type = str(node.get("type") or "").lower().replace("_", "-")
+    return node.get("object") == "block" or node_type in {"code-line", "line", "paragraph"}
+
+
+def fenced_code_markdown(language: str, code: str) -> str:
+    language = str(language or "").strip()
+    fence_len = max(3, max((len(match.group(0)) for match in re.finditer(r"`+", code)), default=0) + 1)
+    fence = "`" * fence_len
+    code = code.rstrip("\n")
+    return f"{fence}{language}\n{code}\n{fence}\n\n"
+
+
 def apply_slate_marks(text: str, marks: list[dict[str, Any]]) -> str:
     if not text or not text.strip():
         return text
@@ -1118,7 +1172,7 @@ def slate_block_markdown(node: dict[str, Any], images: list[str], depth: int = 0
         return "---\n\n"
     if "code" in node_type and node_type != "code":
         language = data.get("language") or data.get("lang") or ""
-        return f"```{language}\n{slate_text(node).rstrip()}\n```\n\n"
+        return fenced_code_markdown(language, slate_code_text(node))
 
     level = heading_level(node_type)
     inline = "".join(slate_inline_markdown(child, images) for child in children).strip()
@@ -1156,6 +1210,42 @@ def slate_block_markdown(node: dict[str, Any], images: list[str], depth: int = 0
     return "".join(slate_block_markdown(child, images, depth) for child in children)
 
 
+def compact_markdown_outside_code(markdown: str) -> str:
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    output: list[str] = []
+    in_fence = False
+    fence_marker = ""
+    blank_count = 0
+
+    for line in lines:
+        stripped = line.lstrip()
+        fence_match = re.match(r"(`{3,}|~{3,})", stripped)
+
+        if in_fence:
+            output.append(line)
+            if fence_match and stripped.startswith(fence_marker):
+                in_fence = False
+            continue
+
+        if fence_match:
+            fence_marker = fence_match.group(1)
+            in_fence = True
+            blank_count = 0
+            output.append(line)
+            continue
+
+        if line.strip():
+            blank_count = 0
+            output.append(line)
+            continue
+
+        blank_count += 1
+        if blank_count <= 1:
+            output.append(line)
+
+    return "\n".join(output).strip()
+
+
 def slate_value_to_markdown(value: dict[str, Any], fallback_title: str) -> dict[str, Any]:
     document = value.get("document") if isinstance(value.get("document"), dict) else value
     nodes = document.get("nodes") if isinstance(document, dict) else []
@@ -1167,7 +1257,7 @@ def slate_value_to_markdown(value: dict[str, Any], fallback_title: str) -> dict[
         for node in nodes
         if isinstance(node, dict)
     )
-    markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
+    markdown = compact_markdown_outside_code(markdown)
     return {
         "ok": True,
         "title": fallback_title,
@@ -1195,6 +1285,37 @@ EXTRACTOR_JS = r"""
 (() => {
   function esc(s) {
     return (s || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  function compact(md) {
+    const lines = (md || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    const out = [];
+    let inFence = false;
+    let fence = "";
+    let blankCount = 0;
+    for (const line of lines) {
+      const trimmedLeft = line.replace(/^\s+/, "");
+      const match = trimmedLeft.match(/^(`{3,}|~{3,})/);
+      if (inFence) {
+        out.push(line);
+        if (match && trimmedLeft.startsWith(fence)) inFence = false;
+        continue;
+      }
+      if (match) {
+        fence = match[1];
+        inFence = true;
+        blankCount = 0;
+        out.push(line);
+        continue;
+      }
+      if (line.trim()) {
+        blankCount = 0;
+        out.push(line);
+        continue;
+      }
+      blankCount += 1;
+      if (blankCount <= 1) out.push(line);
+    }
+    return out.join("\n").trim();
   }
   function inline(n) {
     if (n.nodeType === 3) return n.nodeValue.replace(/\s+/g, " ");
@@ -1249,7 +1370,7 @@ EXTRACTOR_JS = r"""
   if (!editor) {
     return { ok: false, title: document.title, markdown: document.body.innerText.slice(0, 3000), images: [] };
   }
-  const markdown = [...editor.children].map(block).join("").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  const markdown = compact([...editor.children].map(block).join("")) + "\n";
   const images = [...editor.querySelectorAll("img")].map(img => img.src).filter(Boolean);
   return {
     ok: true,

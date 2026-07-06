@@ -1,6 +1,76 @@
 const PROVIDER_REGISTRY = window.WandaoProviders;
-const TOOLS = PROVIDER_REGISTRY?.tools?.() || {};
-const DEFAULT_TOOL_ID = PROVIDER_REGISTRY?.defaultId || 'zsxq';
+let TOOLS = PROVIDER_REGISTRY?.tools?.() || {};
+const DEFAULT_VIEW_ID = 'home';
+const PRIMARY_NAV_ITEMS = [
+  { id: 'home', label: '首页', description: '快速开始' },
+  { id: 'platform-center', label: '平台中心', description: '选择平台和操作' },
+  { id: 'task-center', label: '任务中心', description: '查看最近任务' },
+  { id: 'settings', label: '设置', description: '偏好与帮助' }
+];
+const PLATFORM_ORDER = [
+  'feishu',
+  'yuque',
+  'youdao',
+  'aliyun-thoughts',
+  'onenote',
+  'wiz',
+  'zsxq',
+  'yinxiang',
+  'ima',
+  'notion'
+];
+const PLATFORM_META = {
+  feishu: {
+    name: '飞书',
+    description: '支持 Wiki 知识库导出、Markdown 导入、图片补全和权限检测。',
+    tags: ['导出', '导入']
+  },
+  yuque: {
+    name: '语雀',
+    description: '支持知识库导出和 Markdown 批量导入，适合本地备份和平台迁移。',
+    tags: ['导出', '导入']
+  },
+  youdao: {
+    name: '有道云笔记',
+    description: '支持有道云笔记目录读取、批量导出和图片保存。',
+    tags: ['导出']
+  },
+  'aliyun-thoughts': {
+    name: '阿里云 Thoughts',
+    description: '优先走接口导出正文，失败时回退浏览器渲染，保留目录和图片。',
+    tags: ['导出']
+  },
+  onenote: {
+    name: 'OneNote',
+    description: '读取 Windows 本地 OneNote，导出为 Markdown 并保留笔记本、分区和页面层级。',
+    tags: ['导出']
+  },
+  wiz: {
+    name: '为知笔记',
+    description: '支持网页版为知笔记导出，保留目录结构和图片资源。',
+    tags: ['导出']
+  },
+  zsxq: {
+    name: '知识星球',
+    description: '支持项目/专栏内容导出为 Markdown，适合知识库备份。',
+    tags: ['导出']
+  },
+  yinxiang: {
+    name: '印象笔记',
+    description: '支持印象笔记导出和 Markdown 导入。',
+    tags: ['导出', '导入']
+  },
+  ima: {
+    name: 'ima 知识库',
+    description: '支持 ima 知识库导出和本地文件导入。',
+    tags: ['导出', '导入']
+  },
+  notion: {
+    name: 'Notion',
+    description: 'Notion 官方已支持 Markdown 导出，万能导提供迁移教程和注意事项。',
+    tags: ['教程']
+  }
+};
 
 const FEISHU_DEVELOPER_CONSOLE_URL = 'https://open.feishu.cn/app';
 const FEISHU_IMPORT_REQUIRED_SCOPES = [
@@ -22,7 +92,7 @@ const FEISHU_SCOPE_PRIORITY = [
   'wiki:wiki'
 ];
 
-let currentTool = DEFAULT_TOOL_ID;
+let currentTool = DEFAULT_VIEW_ID;
 let isRunning = false;
 let appPaths = null;
 let feishuImportConfig = {};
@@ -38,6 +108,11 @@ let logViewMode = localStorage.getItem('wandao-log-view') === 'detail' ? 'detail
 const MAX_TASK_HISTORY = 80;
 let taskHistory = [];
 let activeHistoryTask = null;
+
+function refreshProviderTools() {
+  TOOLS = PROVIDER_REGISTRY?.tools?.() || TOOLS || {};
+  return TOOLS;
+}
 
 const ERROR_RULES = [
   {
@@ -904,37 +979,853 @@ window.electronAPI.onPythonLog((data) => {
 });
 
 function providerList(group) {
+  refreshProviderTools();
   if (PROVIDER_REGISTRY?.list) return PROVIDER_REGISTRY.list(group);
   return Object.entries(TOOLS)
     .map(([id, provider]) => ({ id, group: provider.isImport ? 'import' : 'export', ...provider }))
     .filter((provider) => provider.group === group);
 }
 
+async function loadProviderManifests() {
+  if (!window.electronAPI.getProviderManifests || !PROVIDER_REGISTRY?.registerMany) return;
+  const result = await window.electronAPI.getProviderManifests();
+  if (!result?.success) {
+    log(`加载社区 provider 失败：${result?.error || '未知错误'}`, 'error');
+    return;
+  }
+  const manifests = Array.isArray(result.providers) ? result.providers : [];
+  if (!manifests.length) return;
+  PROVIDER_REGISTRY.registerMany(manifests);
+  refreshProviderTools();
+  appendDetailedLog('provider', 'info', `已加载 ${manifests.length} 个文件型 provider。`);
+}
+
+function providerTypeLabel(provider) {
+  const typeMap = {
+    automation: '自动化',
+    guide: '教程',
+    hybrid: '混合'
+  };
+  const statusMap = {
+    stable: '稳定',
+    beta: '测试',
+    experimental: '实验'
+  };
+  const trustMap = {
+    official: '官方',
+    community: '社区',
+    local: '本地',
+    experimental: '实验',
+    guide: '教程'
+  };
+  return [trustMap[provider.trustLevel] || provider.trustLevel, typeMap[provider.type] || provider.type, statusMap[provider.status] || provider.status]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function providerTrustClass(provider) {
+  const trust = provider.trustLevel || 'community';
+  if (trust === 'official') return 'official';
+  if (trust === 'local') return 'local';
+  if (trust === 'experimental' || provider.status === 'experimental') return 'experimental';
+  return 'community';
+}
+
+function allProviders() {
+  refreshProviderTools();
+  if (PROVIDER_REGISTRY?.all) return PROVIDER_REGISTRY.all();
+  return Object.values(TOOLS || {});
+}
+
+function primaryNavIdFor(toolId = currentTool) {
+  if (PRIMARY_NAV_ITEMS.some((item) => item.id === toolId)) return toolId;
+  if (String(toolId || '').startsWith('platform:')) return 'platform-center';
+  if (TOOLS[toolId]) return 'platform-center';
+  return DEFAULT_VIEW_ID;
+}
+
+function setToolHeading(title, description) {
+  const titleNode = document.getElementById('tool-title');
+  const descriptionNode = document.getElementById('tool-description');
+  if (titleNode) titleNode.textContent = title || '万能导 Wandao';
+  if (descriptionNode) descriptionNode.textContent = description || '';
+}
+
+function setTaskHistoryVisible(visible) {
+  const section = document.querySelector('.task-history-section');
+  if (section) section.hidden = !visible;
+}
+
+function platformKey(provider) {
+  return provider.platform || provider.id;
+}
+
+function platformMeta(key, providers = []) {
+  const first = providers[0] || {};
+  const meta = PLATFORM_META[key] || {};
+  return {
+    name: meta.name || first.name || first.title || key,
+    description: meta.description || first.description || '',
+    tags: meta.tags || []
+  };
+}
+
+function platformSortIndex(key) {
+  const index = PLATFORM_ORDER.indexOf(key);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function platformGroups() {
+  const map = new Map();
+  allProviders().forEach((provider) => {
+    const key = platformKey(provider);
+    if (!map.has(key)) map.set(key, { key, providers: [] });
+    map.get(key).providers.push(provider);
+  });
+  return Array.from(map.values())
+    .map((group) => {
+      const meta = platformMeta(group.key, group.providers);
+      return {
+        ...group,
+        ...meta,
+        providers: group.providers.slice().sort((a, b) => {
+          const groupRank = { export: 1, import: 2, guide: 3 };
+          return (groupRank[a.group] || 9) - (groupRank[b.group] || 9)
+            || String(a.title || a.id).localeCompare(String(b.title || b.id), 'zh-Hans-CN');
+        })
+      };
+    })
+    .sort((a, b) => {
+      return platformSortIndex(a.key) - platformSortIndex(b.key)
+        || String(a.name).localeCompare(String(b.name), 'zh-Hans-CN');
+    });
+}
+
+function findPlatformGroup(key) {
+  return platformGroups().find((group) => group.key === key);
+}
+
+function providerActionLabel(provider) {
+  if (provider.type === 'guide' || provider.group === 'guide') return '查看教程';
+  if (provider.isImport || provider.group === 'import') return '导入 Markdown';
+  if (provider.capabilities?.export) return '导出为 Markdown';
+  return provider.navLabel || provider.title || provider.id;
+}
+
+function providerActionTone(provider) {
+  if (provider.isImport || provider.group === 'import') return 'import';
+  if (provider.type === 'guide' || provider.group === 'guide') return 'guide';
+  return 'export';
+}
+
+function providerFeatureTags(provider) {
+  const tags = new Set();
+  if (provider.capabilities?.export) tags.add('导出');
+  if (provider.capabilities?.import || provider.isImport) tags.add('导入');
+  if (provider.type === 'guide' || provider.capabilities?.guide) tags.add('教程');
+  return Array.from(tags);
+}
+
+function platformCapabilityTags(group) {
+  const tags = new Set();
+  group.providers.forEach((provider) => {
+    providerFeatureTags(provider).forEach((tag) => tags.add(tag));
+  });
+  (group.tags || []).forEach((tag) => {
+    if (tag === '导入' || tag === '导出' || tag === '教程') tags.add(tag);
+  });
+  return Array.from(tags);
+}
+
+function providerPlatformSiblings(provider) {
+  const group = findPlatformGroup(platformKey(provider));
+  return group ? group.providers : [provider];
+}
+
 function renderProviderNavigation() {
   const sidebar = document.getElementById('provider-sidebar') || document.querySelector('.sidebar');
   if (!sidebar) return;
-  const groups = [
-    { id: 'export', label: '导出' },
-    { id: 'import', label: '导入' }
+  const activeId = primaryNavIdFor();
+  sidebar.innerHTML = `
+    <details class="nav-group" open>
+      <summary>工作台</summary>
+      ${PRIMARY_NAV_ITEMS.map((item) => `
+        <button class="nav-item ${item.id === activeId ? 'active' : ''}" data-tool="${escapeHtml(item.id)}">
+          <span>${escapeHtml(item.label)}</span>
+          <small>${escapeHtml(item.description)}</small>
+        </button>
+      `).join('')}
+    </details>
+  `;
+}
+
+function bindWorkbenchActions(root = document.getElementById('content-area')) {
+  if (!root) return;
+  root.querySelectorAll('[data-switch-view]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isRunning) switchTool(button.dataset.switchView);
+    });
+  });
+  root.querySelectorAll('[data-platform-key]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isRunning) switchTool(`platform:${button.dataset.platformKey}`);
+    });
+  });
+  root.querySelectorAll('[data-open-provider]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isRunning) switchTool(button.dataset.openProvider);
+    });
+  });
+  root.querySelectorAll('[data-open-url]').forEach((button) => {
+    button.addEventListener('click', () => {
+      window.electronAPI.openExternal(button.dataset.openUrl);
+    });
+  });
+}
+
+function renderHomePage() {
+  setTaskHistoryVisible(false);
+  setToolHeading('首页', '选择平台，或查看最近任务。');
+  const groups = platformGroups();
+  const providers = allProviders();
+  const exportCount = providers.filter((provider) => provider.capabilities?.export).length;
+  const importCount = providers.filter((provider) => provider.capabilities?.import || provider.isImport).length;
+  const guideCount = providers.filter((provider) => provider.type === 'guide' || provider.group === 'guide').length;
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = `
+    <section class="home-hero">
+      <div>
+        <p class="view-kicker">万能导 Wandao</p>
+        <h3>多平台文档导入导出，从一个清晰入口开始。</h3>
+        <p>先选择平台，再选择导出、导入或查看教程。最近任务会统一记录，方便继续处理。</p>
+      </div>
+      <div class="home-hero-actions">
+        <button class="btn-primary" data-switch-view="platform-center" type="button">进入平台中心</button>
+        <button class="btn-secondary" data-switch-view="task-center" type="button">查看任务</button>
+      </div>
+    </section>
+    <section class="metric-grid">
+      <article class="metric-card"><strong>${groups.length}</strong><span>已接入平台</span></article>
+      <article class="metric-card"><strong>${exportCount}</strong><span>导出能力</span></article>
+      <article class="metric-card"><strong>${importCount}</strong><span>导入能力</span></article>
+      <article class="metric-card"><strong>${guideCount}</strong><span>教程</span></article>
+    </section>
+    <section class="home-grid">
+      <article class="home-card">
+        <h4>平台中心</h4>
+        <p>选择飞书、语雀、有道、阿里云、OneNote、为知等平台。</p>
+        <button class="btn-secondary" data-switch-view="platform-center" type="button">查看平台</button>
+      </article>
+      <article class="home-card">
+        <h4>任务中心</h4>
+        <p>查看最近导入导出记录，复制报告，继续上次未完成的任务。</p>
+        <button class="btn-secondary" data-switch-view="task-center" type="button">查看任务</button>
+      </article>
+    </section>
+  `;
+  bindWorkbenchActions(contentArea);
+}
+
+function renderPlatformCard(group) {
+  const tags = platformCapabilityTags(group);
+  return `
+    <article class="platform-card">
+      <div class="platform-card-main">
+        <div class="platform-card-topline">
+          <h3>${escapeHtml(group.name)}</h3>
+          <span>${group.providers.length} 个动作</span>
+        </div>
+        <p>${escapeHtml(group.description || '进入后选择具体操作。')}</p>
+        <div class="provider-tags">
+          ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
+        </div>
+      </div>
+      <button class="btn-primary" data-platform-key="${escapeHtml(group.key)}" type="button">进入平台</button>
+    </article>
+  `;
+}
+
+function renderPlatformCenterPage() {
+  setTaskHistoryVisible(false);
+  setToolHeading('平台中心', '选择平台后，再选择导出、导入或查看教程。');
+  const groups = platformGroups();
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = `
+    <section class="view-panel">
+      <div class="view-panel-header">
+        <div>
+          <p class="view-kicker">平台中心</p>
+          <h3>先选平台，再选择你要做的事。</h3>
+          <p>不同平台会展示不同操作，按当前平台实际支持的能力进入即可。</p>
+        </div>
+        <button class="btn-secondary" data-switch-view="task-center" type="button">查看最近任务</button>
+      </div>
+    </section>
+    <section class="platform-grid">
+      ${groups.map(renderPlatformCard).join('')}
+    </section>
+  `;
+  bindWorkbenchActions(contentArea);
+}
+
+function renderProviderActionCard(provider) {
+  const tags = providerFeatureTags(provider);
+  const tone = providerActionTone(provider);
+  return `
+    <article class="provider-action-card ${tone}">
+      <div>
+        <div class="provider-action-label">${escapeHtml(providerActionLabel(provider))}</div>
+        <h4>${escapeHtml(provider.title || provider.name || provider.id)}</h4>
+        <p>${escapeHtml(provider.description || '')}</p>
+        <div class="provider-tags compact">
+          ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
+        </div>
+      </div>
+      <button class="${tone === 'export' ? 'btn-primary' : 'btn-secondary'}" data-open-provider="${escapeHtml(provider.id)}" type="button">打开</button>
+    </article>
+  `;
+}
+
+function renderPlatformDetailPage(key) {
+  const group = findPlatformGroup(key);
+  if (!group) {
+    log(`未找到平台：${key}`, 'error');
+    switchTool('platform-center');
+    return;
+  }
+  setTaskHistoryVisible(false);
+  setToolHeading(group.name, group.description || '选择这个平台支持的动作。');
+  const tags = platformCapabilityTags(group);
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = `
+    <section class="platform-detail-hero">
+      <div>
+        <button class="btn-text" data-switch-view="platform-center" type="button">返回平台中心</button>
+        <p class="view-kicker">平台</p>
+        <h3>${escapeHtml(group.name)}</h3>
+        <p>${escapeHtml(group.description || '')}</p>
+        <div class="provider-tags">
+          ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
+        </div>
+      </div>
+      <button class="btn-secondary" data-switch-view="task-center" type="button">查看历史任务</button>
+    </section>
+    <section class="provider-action-grid">
+      ${group.providers.map(renderProviderActionCard).join('')}
+    </section>
+  `;
+  bindWorkbenchActions(contentArea);
+}
+
+function renderSettingsPage() {
+  setTaskHistoryVisible(false);
+  setToolHeading('设置', '调整显示、更新和日志偏好。');
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = `
+    <section class="settings-grid">
+      <article class="home-card">
+        <h4>显示模式</h4>
+        <p>当前主题：${document.body.dataset.theme === 'dark' ? '夜间模式' : '日间模式'}</p>
+        <button class="btn-secondary" data-settings-action="theme" type="button">切换主题</button>
+      </article>
+      <article class="home-card">
+        <h4>版本更新</h4>
+        <p>检查 GitHub Releases 是否有新版安装包。</p>
+        <button class="btn-secondary" data-settings-action="check-update" type="button">检查更新</button>
+      </article>
+      <article class="home-card">
+        <h4>日志显示</h4>
+        <p>当前显示：${logViewMode === 'detail' ? '详细日志' : '用户日志'}</p>
+        <button class="btn-secondary" data-settings-action="log-mode" type="button">切换日志</button>
+      </article>
+      <article class="home-card">
+        <h4>关于</h4>
+        <p>查看版本、项目地址和使用帮助。</p>
+        <button class="btn-secondary" data-settings-action="about" type="button">关于万能导</button>
+      </article>
+    </section>
+  `;
+  contentArea.querySelector('[data-settings-action="theme"]')?.addEventListener('click', () => {
+    toggleTheme();
+    renderSettingsPage();
+  });
+  contentArea.querySelector('[data-settings-action="check-update"]')?.addEventListener('click', () => checkForUpdates(false));
+  contentArea.querySelector('[data-settings-action="log-mode"]')?.addEventListener('click', () => {
+    toggleLogViewMode();
+    renderSettingsPage();
+  });
+  contentArea.querySelector('[data-settings-action="about"]')?.addEventListener('click', () => {
+    window.electronAPI.showAbout();
+  });
+}
+
+function renderTaskCenterPage() {
+  setToolHeading('任务中心', '查看最近任务。');
+  const contentArea = document.getElementById('content-area');
+  contentArea.innerHTML = '';
+  setTaskHistoryVisible(true);
+  renderTaskHistory();
+}
+
+function renderProviderModeSwitcher(provider) {
+  const siblings = providerPlatformSiblings(provider);
+  if (siblings.length <= 1) return;
+  const contentArea = document.getElementById('content-area');
+  if (!contentArea) return;
+  const group = findPlatformGroup(platformKey(provider));
+  const switcher = document.createElement('section');
+  switcher.className = 'provider-mode-switcher';
+  switcher.innerHTML = `
+    <div>
+      <span>当前平台</span>
+      <strong>${escapeHtml(group?.name || platformKey(provider))}</strong>
+    </div>
+    <div class="provider-mode-buttons">
+      ${siblings.map((item) => `
+        <button class="mode-button ${item.id === provider.id ? 'active' : ''}" data-open-provider="${escapeHtml(item.id)}" type="button">
+          ${escapeHtml(providerActionLabel(item))}
+        </button>
+      `).join('')}
+    </div>
+  `;
+  contentArea.prepend(switcher);
+  bindWorkbenchActions(switcher);
+}
+
+function renderAppView(viewId) {
+  if (viewId === 'platform-center') {
+    renderPlatformCenterPage();
+  } else if (viewId === 'task-center') {
+    renderTaskCenterPage();
+  } else if (viewId === 'settings') {
+    renderSettingsPage();
+  } else {
+    renderHomePage();
+  }
+}
+
+function markdownInline(value) {
+  let text = escapeHtml(value);
+  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" data-external-link="true">$1</a>');
+  return text;
+}
+
+function markdownToHtml(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+  const html = [];
+  let inCode = false;
+  let codeLines = [];
+  let inList = false;
+
+  const closeList = () => {
+    if (inList) {
+      html.push('</ul>');
+      inList = false;
+    }
+  };
+
+  lines.forEach((line) => {
+    if (line.trim().startsWith('```')) {
+      if (inCode) {
+        html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+        codeLines = [];
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      return;
+    }
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(4, heading[1].length + 1);
+      html.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`);
+      return;
+    }
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      if (!inList) {
+        html.push('<ul>');
+        inList = true;
+      }
+      html.push(`<li>${markdownInline(bullet[1])}</li>`);
+      return;
+    }
+    closeList();
+    html.push(`<p>${markdownInline(trimmed)}</p>`);
+  });
+  closeList();
+  if (inCode) {
+    html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+  }
+  return html.join('\n');
+}
+
+function valueAtPath(source, pathExpression) {
+  if (!pathExpression) return source;
+  return String(pathExpression)
+    .split('.')
+    .filter(Boolean)
+    .reduce((value, key) => {
+      if (value === null || value === undefined) return undefined;
+      if (Array.isArray(value) && /^\d+$/.test(key)) return value[Number(key)];
+      return value[key];
+    }, source);
+}
+
+function asArray(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function renderRequirements(provider) {
+  const requirements = provider.requirements || {};
+  const python = asArray(requirements.python);
+  const system = asArray(requirements.system);
+  const notes = asArray(requirements.notes);
+  if (!python.length && !system.length && !notes.length) return '';
+  const list = [
+    ...python.map((item) => `Python: ${item}`),
+    ...system.map((item) => `系统: ${item}`),
+    ...notes
   ];
-  sidebar.innerHTML = groups.map((group) => {
-    const providers = providerList(group.id);
-    if (!providers.length) return '';
-    const buttons = providers.map((provider) => `
-      <button class="nav-item ${provider.id === currentTool ? 'active' : ''}" data-tool="${escapeHtml(provider.id)}">
-        ${escapeHtml(provider.navLabel || provider.title || provider.id)}
-      </button>
-    `).join('');
+  return `
+    <div class="requirements-card">
+      <strong>运行依赖</strong>
+      <p>这个 provider 声明了额外依赖。正式执行前请确认本机环境已满足，后续版本会继续补自动检测/安装。</p>
+      <ul>${list.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </div>
+  `;
+}
+
+function renderTrustBadge(provider) {
+  const label = providerTypeLabel(provider) || 'Provider';
+  return `<span class="trust-badge ${providerTrustClass(provider)}">${escapeHtml(label)}</span>`;
+}
+
+function renderGuideProvider(provider) {
+  const contentArea = document.getElementById('content-area');
+  const capabilityItems = [
+    provider.capabilities?.export ? '支持导出' : '',
+    provider.capabilities?.import ? '支持导入' : '',
+    provider.capabilities?.images ? '支持图片' : '',
+    provider.capabilities?.tree ? '支持目录结构' : '',
+    provider.capabilities?.batch ? '支持批量' : ''
+  ].filter(Boolean);
+  const guide = provider.guideMarkdown || '# 暂无教程\n\n这个 provider 还没有提供 README.md。';
+  contentArea.innerHTML = `
+    <div class="guide-panel">
+      <section class="provider-overview-card">
+        <div>
+          <div class="provider-kicker">${renderTrustBadge(provider)}</div>
+          <h3>${escapeHtml(provider.title || provider.name || provider.id)}</h3>
+          <p>${escapeHtml(provider.description || '')}</p>
+          <div class="provider-tags">
+            ${(provider.tags || []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
+            ${capabilityItems.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
+          </div>
+        </div>
+        <div class="provider-actions-mini">
+          ${provider.homepage ? `<button class="btn-secondary" data-open-url="${escapeHtml(provider.homepage)}" type="button">打开平台官网</button>` : ''}
+          ${provider.docs ? `<button class="btn-secondary" data-open-url="${escapeHtml(provider.docs)}" type="button">查看官方文档</button>` : ''}
+        </div>
+      </section>
+      ${renderRequirements(provider)}
+      <section class="guide-content">
+        ${markdownToHtml(guide)}
+      </section>
+    </div>
+  `;
+  contentArea.querySelectorAll('[data-open-url]').forEach((button) => {
+    button.addEventListener('click', () => {
+      window.electronAPI.openExternal(button.dataset.openUrl);
+    });
+  });
+  contentArea.querySelectorAll('[data-external-link]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      window.electronAPI.openExternal(link.href);
+    });
+  });
+}
+
+function manifestFieldId(provider, field) {
+  return `${provider.id}-field-${field.name}`;
+}
+
+function renderManifestField(provider, field) {
+  const id = manifestFieldId(provider, field);
+  const label = escapeHtml(field.label || field.name);
+  const required = field.required ? ' <span class="required">*</span>' : '';
+  const placeholder = escapeHtml(field.placeholder || '');
+  const value = escapeHtml(field.default ?? '');
+  if (field.type === 'notice') {
+    return `<div class="info-box">${markdownToHtml(field.markdown || field.text || '')}</div>`;
+  }
+  if (field.type === 'textarea') {
     return `
-      <details class="nav-group" open>
-        <summary>${escapeHtml(group.label)}</summary>
-        ${buttons}
-      </details>
+      <div class="form-group">
+        <label for="${id}">${label}${required}</label>
+        <textarea id="${id}" placeholder="${placeholder}" rows="${field.rows || 6}">${value}</textarea>
+      </div>
     `;
-  }).join('');
+  }
+  if (field.type === 'checkbox') {
+    return `
+      <label class="checkbox-label">
+        <input type="checkbox" id="${id}" ${field.default ? 'checked' : ''}>
+        <span>${label}</span>
+      </label>
+    `;
+  }
+  if (field.type === 'select') {
+    const options = (field.options || []).map((option) => {
+      const optionValue = typeof option === 'string' ? option : option.value;
+      const optionLabel = typeof option === 'string' ? option : option.label;
+      return `<option value="${escapeHtml(optionValue)}" ${optionValue === field.default ? 'selected' : ''}>${escapeHtml(optionLabel)}</option>`;
+    }).join('');
+    return `
+      <div class="form-group">
+        <label for="${id}">${label}${required}</label>
+        <select id="${id}">${options}</select>
+      </div>
+    `;
+  }
+  if (field.type === 'directory' || field.type === 'file') {
+    const buttonLabel = field.type === 'directory' ? '选择目录' : '选择文件';
+    return `
+      <div class="form-group">
+        <label for="${id}">${label}${required}</label>
+        <div class="input-with-button">
+          <input type="text" id="${id}" placeholder="${placeholder}" value="${value}">
+          <button class="btn-secondary" id="${id}-browse" type="button">${buttonLabel}</button>
+        </div>
+      </div>
+    `;
+  }
+  const inputType = field.type === 'password' ? 'password' : (field.type === 'number' ? 'number' : 'text');
+  return `
+    <div class="form-group">
+      <label for="${id}">${label}${required}</label>
+      <input type="${inputType}" id="${id}" placeholder="${placeholder}" value="${value}" ${field.step ? `step="${escapeHtml(field.step)}"` : ''} ${field.min !== undefined ? `min="${escapeHtml(field.min)}"` : ''}>
+    </div>
+  `;
+}
+
+function renderManifestProviderForm(provider) {
+  const contentArea = document.getElementById('content-area');
+  const fields = Array.isArray(provider.fields) ? provider.fields : [];
+  const primaryFields = fields.filter((field) => !field.advanced);
+  const advancedFields = fields.filter((field) => field.advanced);
+  const actions = Array.isArray(provider.actions) && provider.actions.length
+    ? provider.actions
+    : [{ id: 'run', label: provider.isImport ? '开始导入' : '开始导出', script: provider.script }];
+  const guideHtml = provider.guideMarkdown ? `
+    <details class="advanced-section plugin-guide-section">
+      <summary>平台说明 / 操作教程</summary>
+      <div class="guide-content compact">${markdownToHtml(provider.guideMarkdown)}</div>
+    </details>
+  ` : '';
+  contentArea.innerHTML = `
+    <div class="tool-panel manifest-tool-panel">
+      <section class="form-section">
+        <div class="provider-mini-header">
+          ${renderTrustBadge(provider)}
+          <strong>${escapeHtml(provider.name || provider.platform || provider.id)}</strong>
+        </div>
+        ${renderRequirements(provider)}
+        ${primaryFields.map((field) => renderManifestField(provider, field)).join('')}
+        ${advancedFields.length ? `
+          <details class="advanced-section">
+            <summary>高级参数</summary>
+            <div class="advanced-content">
+              ${advancedFields.map((field) => renderManifestField(provider, field)).join('')}
+            </div>
+          </details>
+        ` : ''}
+        ${guideHtml}
+      </section>
+      ${provider.capabilities?.scanToc ? renderTocShell(provider.id, provider.toc?.note || '读取目录后，后续动作会自动带上已勾选的文档 ID。') : ''}
+      <section class="action-section">
+        ${actions.map((action) => `
+          <button class="${action.danger ? 'btn-danger' : (action.secondary ? 'btn-secondary' : 'btn-primary')}" data-manifest-action="${escapeHtml(action.id || action.label)}" type="button">
+            ${escapeHtml(action.label || action.id || '执行')}
+          </button>
+        `).join('')}
+        <button class="btn-danger" id="${provider.id}-stop" disabled>停止</button>
+      </section>
+    </div>
+  `;
+  initializeManifestProviderHandlers(provider, actions, fields);
+}
+
+function manifestFieldValue(provider, field) {
+  const element = document.getElementById(manifestFieldId(provider, field));
+  if (!element) return '';
+  if (field.type === 'checkbox') return Boolean(element.checked);
+  return String(element.value || '').trim();
+}
+
+function buildManifestActionArgs(provider, action, fields) {
+  const args = [...(action.args || [])];
+  for (const field of fields) {
+    if (field.type === 'notice') continue;
+    const value = manifestFieldValue(provider, field);
+    if (field.required && (value === '' || value === false)) {
+      throw new Error(`请填写：${field.label || field.name}`);
+    }
+    if (field.type === 'checkbox') {
+      if (value && field.arg) {
+        args.push(field.arg);
+        if (field.checkedValue !== undefined) args.push(String(field.checkedValue));
+      } else if (!value && field.falseArg) {
+        args.push(field.falseArg);
+      }
+      continue;
+    }
+    if (value === '') continue;
+    if (field.arg) {
+      args.push(field.arg, value);
+    } else if (field.positional) {
+      args.push(value);
+    }
+  }
+  const isScanAction = action.kind === 'scan' || action.scanToc || action.id === 'scan';
+  if (!isScanAction && action.includeSelection !== false && provider.capabilities?.scanToc && tocStates[provider.id]?.loaded) {
+    args.push(...selectedTocArgs(provider.id));
+  }
+  return args;
+}
+
+function applyActionUpdates(provider, action, data) {
+  const updates = Array.isArray(action.updates) ? action.updates : [];
+  updates.forEach((update) => {
+    const fieldName = update.field || update.name;
+    if (!fieldName) return;
+    const target = document.getElementById(manifestFieldId(provider, { name: fieldName }));
+    if (!target) return;
+    const value = valueAtPath(data, update.path);
+    if (update.type === 'options' || target.tagName === 'SELECT') {
+      const items = Array.isArray(value) ? value : [];
+      const placeholder = update.placeholder ? `<option value="">${escapeHtml(update.placeholder)}</option>` : '';
+      const options = items.map((item) => {
+        const optionValue = typeof item === 'object' ? valueAtPath(item, update.valueKey || 'id') : item;
+        const optionLabel = typeof item === 'object' ? valueAtPath(item, update.labelKey || 'name') : item;
+        return `<option value="${escapeHtml(optionValue ?? '')}">${escapeHtml(optionLabel ?? optionValue ?? '')}</option>`;
+      }).join('');
+      target.innerHTML = placeholder + options;
+      return;
+    }
+    if (target.type === 'checkbox') {
+      target.checked = Boolean(value);
+    } else if (value !== undefined && value !== null) {
+      target.value = String(value);
+    }
+  });
+}
+
+function initializeManifestProviderHandlers(provider, actions, fields) {
+  if (provider.capabilities?.scanToc) {
+    if (!tocStates[provider.id]) {
+      tocStates[provider.id] = { loaded: false, nodes: [], selected: new Set() };
+    }
+    initializeTocInteraction(provider.id);
+  }
+  fields.forEach((field) => {
+    const id = manifestFieldId(provider, field);
+    const browse = document.getElementById(`${id}-browse`);
+    if (!browse) return;
+    browse.addEventListener('click', async () => {
+      const current = document.getElementById(id)?.value || '';
+      if (field.type === 'directory') {
+        const dir = await window.electronAPI.selectDirectory({ title: field.dialogTitle || field.label || '选择目录', defaultPath: current });
+        if (dir) document.getElementById(id).value = dir;
+      } else {
+        const file = await window.electronAPI.selectFile({ title: field.dialogTitle || field.label || '选择文件', filters: field.filters || [] });
+        if (file) document.getElementById(id).value = file;
+      }
+    });
+  });
+  actions.forEach((action) => {
+    const button = document.querySelector(`[data-manifest-action="${CSS.escape(action.id || action.label)}"]`);
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      if (action.confirm && !confirm(action.confirm)) return;
+      if (action.openUrl) {
+        await window.electronAPI.openExternal(action.openUrl);
+        return;
+      }
+      const script = action.script || provider.script;
+      if (!script) {
+        alert('这个动作没有配置脚本，可能只是教程型 provider。');
+        return;
+      }
+      let args;
+      try {
+        args = buildManifestActionArgs(provider, action, fields);
+      } catch (error) {
+        alert(formatError(error));
+        return;
+      }
+      setRunning(true, provider.id);
+      startProgress(action.progressTitle || action.label || provider.title, action.progressDetail || '正在执行 provider 动作...');
+      log(`开始：${action.label || provider.title}`, 'info');
+      try {
+        const result = await runTrackedPythonCommand(script, args, {
+          providerId: provider.id,
+          title: action.label || provider.title,
+          action: action.actionName || action.label || '执行',
+          track: action.track !== false
+        });
+        if (result.success) {
+          log(`完成：${action.label || provider.title}`, 'success');
+          if (result.data) log(JSON.stringify(result.data, null, 2), 'success');
+          applyActionUpdates(provider, action, result.data || {});
+          if (action.kind === 'scan' || action.scanToc || action.id === 'scan') {
+            const nodes = normalizeTocNodes(provider.id, result.data || {});
+            tocStates[provider.id] = {
+              loaded: true,
+              nodes,
+              selected: new Set(selectableTocIds(nodes))
+            };
+            renderToc(provider.id);
+            log(`目录读取完成：共 ${selectableTocIds(nodes).length} 篇，默认已全选。`, 'success');
+            finishProgress(true, `目录读取完成，共 ${selectableTocIds(nodes).length} 篇`);
+          } else {
+            finishProgress(true, `${action.label || '任务'}完成`);
+          }
+        } else {
+          log(`失败：${result.error}`, 'error');
+          finishProgress(false, `${action.label || '任务'}失败，请查看运行日志`);
+        }
+      } catch (error) {
+        log(`错误：${formatError(error)}`, 'error');
+        finishProgress(false, `${action.label || '任务'}出错，请查看运行日志`);
+      } finally {
+        setRunning(false, provider.id);
+      }
+    });
+  });
+  document.getElementById(`${provider.id}-stop`)?.addEventListener('click', handleStop);
 }
 
 function renderGenericProviderForm(provider) {
+  if ((provider.fields && provider.fields.length) || (provider.actions && provider.actions.length)) {
+    renderManifestProviderForm(provider);
+    return;
+  }
   const contentArea = document.getElementById('content-area');
   const actionName = provider.isImport ? '导入' : '导出';
   const sourceLabel = provider.isImport ? '本地目录' : '输出目录';
@@ -995,36 +1886,47 @@ function renderGenericProviderForm(provider) {
 
 // Tool switching
 function switchTool(toolId) {
-  currentTool = toolId;
-  const config = TOOLS[toolId];
-  if (!config) {
-    log(`未找到平台 provider：${toolId}`, 'error');
+  refreshProviderTools();
+  currentTool = toolId || DEFAULT_VIEW_ID;
+  renderProviderNavigation();
+
+  if (String(currentTool).startsWith('platform:')) {
+    renderPlatformDetailPage(String(currentTool).slice('platform:'.length));
     return;
   }
 
-  // Update header
-  document.getElementById('tool-title').textContent = config.title;
-  document.getElementById('tool-description').textContent = config.description;
+  if (PRIMARY_NAV_ITEMS.some((item) => item.id === currentTool)) {
+    renderAppView(currentTool);
+    return;
+  }
 
-  // Update navigation
-  document.querySelectorAll('.nav-item').forEach(item => {
-    item.classList.toggle('active', item.dataset.tool === toolId);
-  });
+  const config = TOOLS[currentTool];
+  if (!config) {
+    log(`未找到平台 provider：${currentTool}`, 'error');
+    switchTool(DEFAULT_VIEW_ID);
+    return;
+  }
+
+  setTaskHistoryVisible(false);
+  setToolHeading(config.title, config.description);
 
   // Load tool template
   const contentArea = document.getElementById('content-area');
-  const template = document.getElementById(`template-${toolId}`);
+  const template = document.getElementById(config.templateId || `template-${currentTool}`);
 
-  if (template) {
+  if (config.type === 'guide' || (!config.script && !template && !(config.actions || []).length)) {
+    renderGuideProvider(config);
+  } else if (template) {
     contentArea.innerHTML = '';
     const clone = template.content.cloneNode(true);
     contentArea.appendChild(clone);
-    initializeToolHandlers(toolId);
-  } else if (toolId === 'feishu-import') {
+    initializeToolHandlers(currentTool);
+  } else if (currentTool === 'feishu-import') {
     loadFeishuImportTool();
   } else {
     renderGenericProviderForm(config);
   }
+  renderProviderModeSwitcher(config);
 }
 
 // Initialize tool event handlers
@@ -1841,6 +2743,41 @@ function ensureTocSelector(toolId) {
   }
 }
 
+function renderTocShell(toolId, note = '读取目录后，只会处理已勾选的文档；点击文件夹可批量切换其下所有文档。') {
+  return `
+    <section class="toc-section" id="${toolId}-toc-section">
+      <div class="toc-header">
+        <div>
+          <strong>目录选择</strong>
+          <p id="${toolId}-toc-status">目录：未读取，未读取时默认处理全部。</p>
+        </div>
+        <div class="toc-actions">
+          <button class="btn-secondary" id="${toolId}-toc-all" type="button">全选</button>
+          <button class="btn-secondary" id="${toolId}-toc-none" type="button">全不选</button>
+          <button class="btn-secondary" id="${toolId}-toc-invert" type="button">反选</button>
+        </div>
+      </div>
+      <div class="toc-list" id="${toolId}-toc-list">
+        <div class="toc-empty">先点击“读取目录”，再选择要处理的内容。</div>
+      </div>
+      <p class="helper-note">${escapeHtml(note)}</p>
+    </section>
+  `;
+}
+
+function initializeTocInteraction(toolId) {
+  document.getElementById(`${toolId}-toc-all`)?.addEventListener('click', () => setAllTocSelected(toolId, true));
+  document.getElementById(`${toolId}-toc-none`)?.addEventListener('click', () => setAllTocSelected(toolId, false));
+  document.getElementById(`${toolId}-toc-invert`)?.addEventListener('click', () => invertTocSelection(toolId));
+  document.getElementById(`${toolId}-toc-list`)?.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-node-id]');
+    if (item) toggleTocNode(toolId, item.dataset.nodeId);
+  });
+  if (tocStates[toolId]?.loaded) {
+    renderToc(toolId);
+  }
+}
+
 function buildExportArgs(toolId, options = {}) {
   const config = TOOLS[toolId];
   const prefix = toolId;
@@ -1911,7 +2848,45 @@ function buildExportArgs(toolId, options = {}) {
   return args;
 }
 
+function normalizeStandardTocNodes(provider, data) {
+  const toc = provider.toc || {};
+  const items = valueAtPath(data, toc.itemsPath || 'nodes');
+  if (!Array.isArray(items)) return [];
+  const idKey = toc.idKey || 'nodeId';
+  const exportIdKey = toc.exportIdKey || 'exportId';
+  const titleKey = toc.titleKey || 'title';
+  const parentKey = toc.parentIdKey || 'parentNodeId';
+  const selectableKey = toc.selectableKey || 'selectable';
+  const typeKey = toc.typeKey || 'type';
+  const selectableTypes = Array.isArray(toc.selectableTypes) ? new Set(toc.selectableTypes.map(String)) : null;
+  const parentPrefix = toc.nodePrefix || provider.id;
+  return items.map((item, index) => {
+    const rawId = String(valueAtPath(item, idKey) ?? valueAtPath(item, exportIdKey) ?? `${provider.id}-node-${index}`);
+    const rawParent = String(valueAtPath(item, parentKey) ?? '');
+    const exportId = String(valueAtPath(item, exportIdKey) ?? valueAtPath(item, idKey) ?? '');
+    const typeValue = String(valueAtPath(item, typeKey) ?? '');
+    let selectable = Boolean(valueAtPath(item, selectableKey));
+    if (selectableTypes) selectable = selectableTypes.has(typeValue);
+    if (toc.selectableWhenExportId !== false && exportId && valueAtPath(item, selectableKey) === undefined && !selectableTypes) {
+      selectable = true;
+    }
+    return {
+      nodeId: rawId.includes(':') ? rawId : `${parentPrefix}:${rawId}`,
+      exportId,
+      title: String(valueAtPath(item, titleKey) ?? '未命名'),
+      parentNodeId: rawParent ? (rawParent.includes(':') ? rawParent : `${parentPrefix}:${rawParent}`) : '',
+      selectable,
+      raw: item
+    };
+  });
+}
+
 function normalizeTocNodes(toolId, data) {
+  const provider = TOOLS[toolId];
+  if (provider && (provider.sourceKind || provider.toc?.itemsPath || provider.toc?.standard)) {
+    const nodes = normalizeStandardTocNodes(provider, data);
+    if (nodes.length) return nodes;
+  }
   const nodes = [];
   if (toolId === 'zsxq') {
     (data.groups || []).forEach((group, groupIndex) => {
@@ -2180,6 +3155,9 @@ function selectedTocArgs(toolId) {
   if (toolId === 'zsxq') {
     args.push('--toc-mode', 'toc');
     selected.forEach((id) => args.push('--toc-key', id));
+  } else if (TOOLS[toolId]?.sourceKind || TOOLS[toolId]?.toc?.selectionArg) {
+    const selectionArg = TOOLS[toolId]?.toc?.selectionArg || '--doc-id';
+    selected.forEach((id) => args.push(selectionArg, id));
   } else {
     selected.forEach((id) => args.push('--doc-id', id));
   }
@@ -2305,6 +3283,9 @@ function setRunning(running, toolId) {
   if (loginBtn) loginBtn.disabled = running;
   if (scanTocBtn) scanTocBtn.disabled = running;
   if (stopBtn) stopBtn.disabled = !running;
+  document.querySelectorAll('#content-area [data-manifest-action]').forEach((button) => {
+    button.disabled = running;
+  });
   ['toc-all', 'toc-none', 'toc-invert', 'open-dir', 'plan', 'one', 'save-config', 'open-token', 'list-kbs', 'list-folders'].forEach((suffix) => {
     const button = document.getElementById(`${prefix}-${suffix}`);
     if (button) button.disabled = running;
@@ -2828,17 +3809,20 @@ function initializeFeishuImportHandlers() {
 }
 
 // Initialize app
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   applyTheme(loadTheme());
+  try {
+    await loadProviderManifests();
+  } catch (error) {
+    appendDetailedLog('provider', 'error', formatError(error));
+  }
   renderProviderNavigation();
 
   // Setup navigation
-  document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', () => {
-      if (!isRunning) {
-        switchTool(item.dataset.tool);
-      }
-    });
+  document.getElementById('provider-sidebar')?.addEventListener('click', (event) => {
+    const item = event.target.closest('.nav-item');
+    if (!item || isRunning) return;
+    switchTool(item.dataset.tool);
   });
 
   // Setup footer buttons
@@ -2888,12 +3872,12 @@ document.addEventListener('DOMContentLoaded', () => {
   window.electronAPI.getAppPath().then((paths) => {
     appPaths = paths;
     loadTaskHistory().catch((error) => log(`读取任务历史失败：${formatError(error)}`, 'error'));
-    switchTool(DEFAULT_TOOL_ID);
+    switchTool(DEFAULT_VIEW_ID);
     log('万能导已启动', 'success');
     window.setTimeout(() => checkForUpdates(true), 1000);
   }).catch(() => {
     renderTaskHistory();
-    switchTool(DEFAULT_TOOL_ID);
+    switchTool(DEFAULT_VIEW_ID);
     log('万能导已启动', 'success');
     window.setTimeout(() => checkForUpdates(true), 1000);
   });

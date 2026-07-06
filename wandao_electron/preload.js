@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   showAbout: () => ipcRenderer.invoke('show-about'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  getProviderManifests: () => ipcRenderer.invoke('get-provider-manifests'),
 
   // 应用路径
   getAppPath: () => ipcRenderer.invoke('get-app-path'),

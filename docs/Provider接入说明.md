@@ -1,87 +1,102 @@
 # Provider 接入说明
 
-万能导的桌面端已经开始按 provider 方式组织平台能力。一个 provider 代表一个平台或一个平台下的导入/导出方向，例如“语雀导出”“语雀 Markdown 导入”是两个 provider。
+从 1.2.0 开始，万能导支持两种 provider：
 
-## Provider 放在哪里
+- **内置 provider**：仍然由 `wandao_electron/renderer/providers.js` 注册，适合官方长期维护的平台。
+- **文件型 provider**：放在 `providers/<provider-id>/provider.json`，适合社区共创、教程型平台和实验平台。
 
-桌面端 provider 注册在：
+详细规范见：
 
 ```text
-wandao_electron/renderer/providers.js
+docs/插件开发指南.md
 ```
 
-新增平台时，优先在这里注册基础信息：
+## 为什么这样设计
 
-```js
+平台越来越多后，不能要求所有贡献者都理解 Electron UI。新的文件型 provider 把平台接入拆成三层：
+
+- `provider.json`：声明平台信息、表单字段、动作按钮和能力。
+- `README.md`：展示平台教程、限制和人工操作步骤。
+- `export.py` / `import.py`：可选，只有需要自动化时才提供。
+
+这样有的平台可以写脚本自动导出，有的平台可以先提供教程，后续再升级成自动化。
+
+## Provider 类型
+
+```text
+automation：自动化脚本型
+guide：教程说明型
+hybrid：混合型
+```
+
+示例：
+
+```json
 {
-  id: 'demo-export',
-  platform: 'demo',
-  navLabel: '示例平台导出',
-  title: '示例平台导出',
-  description: '将示例平台内容导出为 Markdown',
-  script: 'export_demo.py',
-  urlParam: '--entry-url',
-  outputParam: '--output',
-  defaults: { output: 'exports/demo' },
-  capabilities: {
-    login: true,
-    scanToc: true,
-    export: true,
-    import: false,
-    stop: true,
-    report: true
-  }
+  "id": "notion",
+  "name": "Notion",
+  "type": "guide",
+  "group": "guide",
+  "guide": "README.md"
 }
 ```
 
-## 统一能力
-
-provider 目前统一描述这些能力：
-
-- `login`：是否需要登录并保存凭证。
-- `scanToc`：是否支持读取目录并勾选部分内容。
-- `export`：是否是导出任务。
-- `import`：是否是导入任务。
-- `stop`：是否支持停止当前任务。
-- `report`：是否进入统一错误报告。
-
-桌面端侧边栏会根据 provider 自动生成，不再需要手动在 HTML 里增加导航按钮。
-
-## 简单平台接入
-
-如果平台是常规“URL + 输出目录 + Python 脚本”的模式，只需要：
-
-1. 写好对应 Python 脚本，例如 `export_demo.py`。
-2. 在 `providers.js` 注册 provider。
-3. 确认脚本支持统一参数，例如 `--entry-url`、`--output`、`--login`、`--scan-toc`。
-
-没有专属 HTML 模板时，桌面端会自动生成一个基础表单。
-
-## 复杂平台接入
-
-如果平台需要特殊字段，例如 API Key、App Secret、目标知识库下拉选择、文件夹选择等，可以继续使用专属模板：
+## 社区插件目录
 
 ```text
-template-demo-export
+providers/
+  _template/
+  notion/
 ```
 
-模板 ID 默认是：
+以下划线开头的目录不会自动加载，可以作为模板或草稿。
 
-```text
-template-${provider.id}
+## UI 生成原则
+
+社区 provider 默认不直接写前端代码，而是通过 `fields` 和 `actions` 声明 UI：
+
+```json
+{
+  "fields": [
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true
+    }
+  ],
+  "actions": [
+    {
+      "id": "export",
+      "label": "开始导出",
+      "script": "export.py"
+    }
+  ]
+}
 ```
 
-专属模板只负责特殊表单，脚本调用、日志、停止、错误报告仍尽量走统一能力。
+主程序会自动生成表单和按钮，并把用户输入转换为 Python 命令行参数。
 
-## 后续演进
+## 复杂平台怎么共创
 
-后续可以继续把 Python 侧也整理成 provider 结构，让每个平台实现统一接口：
+像飞书导入这种复杂功能，仍然可以共创，但建议分级：
 
-- `login`
-- `scan_toc`
-- `export`
-- `import`
-- `stop`
-- `report`
+- **普通 provider**：只靠 `provider.json` 生成表单和按钮，适合 URL、目录、API Key、简单下拉等场景。
+- **高级 provider**：先用 `actions.updates` 读取空间/知识库/文件夹，再动态回填字段。
+- **官方/复杂 provider**：如果需要多步骤授权、权限排障、动态目录树、图片修复、专属错误处理，可以先贡献 Python 核心脚本和 README，再由维护者接入专属模板。
 
-这样新增平台时，只需要新增一个 provider 文件，而不是同时修改多处 UI 和调度逻辑。
+也就是说，插件化不是要求所有平台都只能用一套简单 UI。简单平台不改前端即可共创；复杂平台可以逐步从教程型、脚本型升级为内置复杂 provider。
+
+## 已支持的扩展点
+
+- `trustLevel`：标记官方、社区、本地、实验 provider。
+- `requirements`：声明 Python、系统和使用依赖。
+- `toc`：声明通用目录树字段映射，支持读取目录后勾选。
+- `actions.updates`：动作完成后把结果回填到输入框或下拉框。
+
+## 内置平台何时继续用专属模板
+
+如果平台交互非常复杂，例如飞书导入需要权限初始化、目标 Wiki 探测、图片修复等，可以继续保留专属 HTML 模板和专属 JS 逻辑。
+
+新的文件型 provider 不是要消灭所有特殊 UI，而是让多数平台接入不用再改 Electron 代码。

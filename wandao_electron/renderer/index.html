@@ -9,9 +9,12 @@
 <body>
   <div class="app-container">
     <header class="app-header">
-      <div>
-        <h1>万能导 Wandao</h1>
-        <p class="subtitle">让知识没有壁垒，多平台文档互转</p>
+      <div class="brand">
+        <img class="brand-logo" src="../assets/icon.png" alt="万能导 Wandao Logo">
+        <div class="brand-copy">
+          <h1>万能导 Wandao</h1>
+          <p class="subtitle">让知识没有壁垒，多平台文档互转</p>
+        </div>
       </div>
       <div class="header-actions">
         <button class="btn-secondary header-button" id="btn-check-update" type="button">检查更新</button>
@@ -35,8 +38,8 @@
         </section>
 
         <section class="tool-heading">
-          <h2 id="tool-title">知识星球任意项目/专栏导出</h2>
-          <p id="tool-description">将知识星球内容导出为本地 Markdown 文件</p>
+          <h2 id="tool-title">首页</h2>
+          <p id="tool-description">选择平台，或查看最近任务。</p>
         </section>
 
         <div id="content-area"></div>
@@ -52,7 +55,7 @@
           <div class="progress-detail" id="progress-detail">等待任务开始</div>
         </section>
 
-        <section class="task-history-section">
+        <section class="task-history-section" hidden>
           <div class="task-history-header">
             <div>
               <h3>任务历史</h3>

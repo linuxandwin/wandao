@@ -8,14 +8,26 @@
     if (!provider || !provider.id) {
       throw new Error('Provider must include an id');
     }
+    const type = provider.type || (provider.guide ? 'hybrid' : 'automation');
+    const isImport = Boolean(provider.isImport || provider.group === 'import');
+    const group = provider.group || (type === 'guide' ? 'guide' : (isImport ? 'import' : 'export'));
+    const trustLevel = provider.trustLevel || (provider.sourceKind ? 'community' : 'official');
+    const defaultScanToc = provider.sourceKind ? false : true;
     return Object.freeze({
-      group: provider.isImport ? 'import' : 'export',
-      templateId: `template-${provider.id}`,
+      ...provider,
+      type,
+      group,
+      isImport,
+      trustLevel,
+      requirements: provider.requirements || {},
+      toc: provider.toc || {},
+      templateId: provider.templateId || `template-${provider.id}`,
       capabilities: {
         login: false,
-        scanToc: true,
-        export: !provider.isImport,
-        import: Boolean(provider.isImport),
+        scanToc: defaultScanToc,
+        export: !isImport && type !== 'guide',
+        import: isImport,
+        guide: type === 'guide' || type === 'hybrid',
         stop: true,
         report: true,
         ...(provider.capabilities || {})
@@ -23,8 +35,7 @@
       defaults: {
         output: '',
         ...(provider.defaults || {})
-      },
-      ...provider
+      }
     });
   }
 
@@ -32,6 +43,11 @@
     const normalized = normalizeProvider(provider);
     providers.set(normalized.id, normalized);
     return normalized;
+  }
+
+  function registerMany(items) {
+    (items || []).forEach(register);
+    return Array.from(providers.values());
   }
 
   [
@@ -200,6 +216,7 @@
   window.WandaoProviders = {
     defaultId: 'zsxq',
     register,
+    registerMany,
     get(id) {
       return providers.get(id);
     },

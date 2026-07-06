@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "id": "demo-provider",
+  "name": "示例平台",
+  "title": "示例平台导出",
+  "navLabel": "示例平台",
+  "description": "演示社区 provider 的最小结构。",
+  "type": "hybrid",
+  "group": "export",
+  "trustLevel": "community",
+  "status": "experimental",
+  "guide": "README.md",
+  "tags": ["template", "community"],
+  "capabilities": {
+    "export": true,
+    "import": false,
+    "guide": true,
+    "scanToc": true,
+    "images": true,
+    "tree": false,
+    "batch": true
+  },
+  "requirements": {
+    "python": ["requests>=2.31.0"],
+    "system": [],
+    "notes": ["如果插件需要额外依赖，请在 README.md 说明安装方法。"]
+  },
+  "toc": {
+    "itemsPath": "nodes",
+    "idKey": "nodeId",
+    "exportIdKey": "exportId",
+    "titleKey": "title",
+    "parentIdKey": "parentNodeId",
+    "selectableKey": "selectable",
+    "selectionArg": "--doc-id",
+    "note": "读取目录后，导出动作会自动携带已勾选的 --doc-id。"
+  },
+  "fields": [
+    {
+      "name": "entry_url",
+      "label": "入口 URL",
+      "type": "text",
+      "arg": "--entry-url",
+      "required": true,
+      "placeholder": "https://example.com/article"
+    },
+    {
+      "name": "output",
+      "label": "输出目录",
+      "type": "directory",
+      "arg": "--output",
+      "required": true
+    },
+    {
+      "name": "target_space",
+      "label": "目标空间",
+      "type": "select",
+      "arg": "--target-space",
+      "advanced": true,
+      "options": [
+        {
+          "label": "默认空间",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "incremental",
+      "label": "增量导出",
+      "type": "checkbox",
+      "arg": "--incremental",
+      "default": true,
+      "advanced": true
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan",
+      "kind": "scan",
+      "label": "读取目录",
+      "script": "export.py",
+      "args": ["--scan-toc"],
+      "includeSelection": false,
+      "actionName": "读取目录",
+      "progressTitle": "读取示例平台目录",
+      "progressDetail": "正在读取远端目录..."
+    },
+    {
+      "id": "list-spaces",
+      "label": "读取空间列表",
+      "script": "export.py",
+      "args": ["--list-spaces"],
+      "includeSelection": false,
+      "secondary": true,
+      "updates": [
+        {
+          "field": "target_space",
+          "type": "options",
+          "path": "spaces",
+          "valueKey": "id",
+          "labelKey": "name",
+          "placeholder": "请选择目标空间"
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "label": "开始导出",
+      "script": "export.py",
+      "args": ["--progress-every", "1"],
+      "actionName": "导出",
+      "progressTitle": "示例平台导出",
+      "progressDetail": "正在执行社区 provider 脚本..."
+    }
+  ]
+}

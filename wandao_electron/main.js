@@ -20,6 +20,34 @@ const PROJECT_INFO = {
   wechat: 'pressure_spring'
 };
 
+const APP_ID = 'com.wandao.app';
+
+function resolveAppAsset(fileName) {
+  const candidates = uniquePaths([
+    path.join(__dirname, 'assets', fileName),
+    path.join(app.getAppPath(), 'assets', fileName),
+    path.join(process.resourcesPath || '', 'assets', fileName)
+  ]);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function appIconPath() {
+  if (process.platform === 'win32') {
+    return resolveAppAsset('icon.ico');
+  }
+  return resolveAppAsset('icon.png');
+}
+
+function configureAppIdentity() {
+  app.setName(PROJECT_INFO.name);
+  if (process.platform === 'win32') {
+    app.setAppUserModelId(APP_ID);
+  }
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(resolveAppAsset('icon.png'));
+  }
+}
+
 function cleanupPythonProcess() {
   if (pythonProcess) {
     try {
@@ -46,7 +74,137 @@ const ALLOWED_SCRIPTS = new Set([
   'ima_knowledge.py'
 ]);
 
+function uniquePaths(paths) {
+  const seen = new Set();
+  const result = [];
+  for (const item of paths) {
+    if (!item) continue;
+    const normalized = path.resolve(item);
+    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function providerRoots() {
+  return uniquePaths([
+    path.join(__dirname, '..', 'providers'),
+    path.join(process.cwd(), 'providers'),
+    path.join(app.getAppPath(), '..', 'providers'),
+    path.join(process.resourcesPath || '', 'providers'),
+    path.join(app.getPath('userData'), 'providers')
+  ]);
+}
+
+function isInsidePath(root, candidate) {
+  const rootPath = path.resolve(root);
+  const targetPath = path.resolve(candidate);
+  const left = process.platform === 'win32' ? rootPath.toLowerCase() : rootPath;
+  const right = process.platform === 'win32' ? targetPath.toLowerCase() : targetPath;
+  return right === left || right.startsWith(left + path.sep);
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+
+function readGuideMarkdown(providerRoot, guidePath) {
+  if (!guidePath) return '';
+  const resolved = path.resolve(providerRoot, guidePath);
+  if (!isInsidePath(providerRoot, resolved) || !fs.existsSync(resolved)) return '';
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile() || stat.size > 512 * 1024) return '';
+  return fs.readFileSync(resolved, 'utf-8');
+}
+
+function pluginScriptRef(providerId, scriptName, providerRoot) {
+  if (!scriptName || ALLOWED_SCRIPTS.has(scriptName) || String(scriptName).startsWith('provider:')) {
+    return scriptName || '';
+  }
+  const resolved = path.resolve(providerRoot, scriptName);
+  if (!isInsidePath(providerRoot, resolved) || !fs.existsSync(resolved)) {
+    return '';
+  }
+  if (path.extname(resolved).toLowerCase() !== '.py') {
+    return '';
+  }
+  return `provider:${providerId}:${scriptName.replace(/\\/g, '/')}`;
+}
+
+function normalizeProviderManifest(raw, providerRoot, sourceKind) {
+  if (!raw || !raw.id) return null;
+  const id = String(raw.id).trim();
+  if (!/^[a-z0-9][a-z0-9_-]{1,63}$/i.test(id)) return null;
+  const provider = {
+    ...raw,
+    id,
+    sourceKind,
+    trustLevel: raw.trustLevel || (sourceKind === 'user' ? 'local' : 'community'),
+    status: raw.status || 'experimental',
+    templateId: raw.templateId || '',
+    guideMarkdown: readGuideMarkdown(providerRoot, raw.guide || raw.guidePath || 'README.md')
+  };
+  provider.script = pluginScriptRef(id, raw.script, providerRoot);
+  if (Array.isArray(raw.actions)) {
+    provider.actions = raw.actions.map((action) => ({
+      ...action,
+      script: pluginScriptRef(id, action && action.script, providerRoot) || provider.script
+    }));
+  }
+  return provider;
+}
+
+function discoverProviderManifests() {
+  const providers = [];
+  const seen = new Set();
+  for (const root of providerRoots()) {
+    if (!fs.existsSync(root)) continue;
+    const sourceKind = root.startsWith(app.getPath('userData')) ? 'user' : 'bundled';
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
+      const providerRoot = path.join(root, entry.name);
+      const manifestPath = path.join(providerRoot, 'provider.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = normalizeProviderManifest(readJsonFile(manifestPath), providerRoot, sourceKind);
+        if (!manifest || seen.has(manifest.id)) continue;
+        seen.add(manifest.id);
+        providers.push(manifest);
+      } catch (error) {
+        console.warn(`Failed to load provider manifest ${manifestPath}:`, error);
+      }
+    }
+  }
+  return providers;
+}
+
+function findProviderScript(scriptName) {
+  const match = String(scriptName || '').match(/^provider:([a-z0-9_-]+):(.+)$/i);
+  if (!match) {
+    throw new Error(`不允许执行的脚本：${scriptName}`);
+  }
+  const providerId = match[1];
+  const relativeScript = match[2];
+  for (const root of providerRoots()) {
+    const providerRoot = path.join(root, providerId);
+    if (!fs.existsSync(providerRoot)) continue;
+    const scriptPath = path.resolve(providerRoot, relativeScript);
+    if (!isInsidePath(providerRoot, scriptPath)) {
+      throw new Error(`插件脚本路径越界：${relativeScript}`);
+    }
+    if (fs.existsSync(scriptPath) && path.extname(scriptPath).toLowerCase() === '.py') {
+      return scriptPath;
+    }
+  }
+  throw new Error(`无法找到插件脚本：${scriptName}`);
+}
+
 function findPythonScript(scriptName = 'import_feishu.py') {
+  if (String(scriptName || '').startsWith('provider:')) {
+    return findProviderScript(scriptName);
+  }
   if (!ALLOWED_SCRIPTS.has(scriptName)) {
     throw new Error(`不允许执行的脚本：${scriptName}`);
   }
@@ -176,11 +334,13 @@ function parseLastJson(stdout) {
 }
 
 function createWindow() {
+  const icon = appIconPath();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 900,
     minHeight: 600,
+    icon,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -397,6 +557,7 @@ function buildApplicationMenu() {
 }
 
 app.whenReady().then(() => {
+  configureAppIdentity();
   buildApplicationMenu();
   createWindow();
 });
@@ -578,6 +739,14 @@ ipcMain.handle('check-for-updates', async () => {
     return { success: true, data: result };
   } catch (error) {
     return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('get-provider-manifests', async () => {
+  try {
+    return { success: true, providers: discoverProviderManifests() };
+  } catch (error) {
+    return { success: false, error: error.message || String(error), providers: [] };
   }
 });
 

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-bundled%20in%20release-blue" alt="Python"></a>
   <a href="#系统要求"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform"></a>
   <a href="https://github.com/tllovesxs/wandao"><img src="https://img.shields.io/badge/GitHub-tllovesxs%2Fwandao-black" alt="GitHub"></a>
@@ -25,7 +25,7 @@
   <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" title="印象笔记 / Evernote" width="24">
 </p>
 
-万能导是一个多平台(目前已支持飞书,语雀,阿里云,印象笔记,有道云笔记,知识星球,ima,为知笔记,onenote,本地md)知识库 Markdown 导入导出工具。你可以把自己有权限访问的项目资料、团队知识库、课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台中。全网效果最好的导入导出工具,在文档格式,图片,目录结构方面的导出质量效果最好.
+万能导是一个多平台(目前已支持飞书,语雀,阿里云,印象笔记,有道云笔记,为知笔记,OneNote,知识星球,ima,本地 md)知识库 Markdown 导入导出工具。你可以把自己有权限访问的项目资料、团队知识库、课程文档导出为本地 Markdown，也可以把整理好的本地 Markdown 再导入到支持的平台中。全网效果最好的导入导出工具,在文档格式,图片,目录结构方面的导出质量效果最好.
 
 如果还有你不满意的地方,请提issues,你任何需求都会被重视.
 
@@ -43,6 +43,7 @@ Author: `tllovesxs`
 | 🐛 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
 | 📖 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
 | 🔌 Provider 接入 | [docs/Provider接入说明.md](docs/Provider接入说明.md) |
+| 🧩 插件开发 | [docs/插件开发指南.md](docs/插件开发指南.md) |
 | 🧠 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
 | 💬 作者微信 | `pressure_spring` |
 | 📮 联系邮箱 | `tl200599@163.com` |
@@ -65,6 +66,8 @@ Author: `tllovesxs`
 | ☁️ 阿里云 Thoughts | 支持工作区文档导出为 Markdown |
 | <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" width="16"> 印象笔记 | 支持同步后按笔记本导出 Markdown |
 | 📝 有道云笔记 | 支持浏览器登录后读取目录树，导出 Markdown、图片和附件 |
+| 📒 为知笔记 | 支持网页版登录后导出 Markdown，并保留目录和图片 |
+| 🗂️ OneNote | 支持 Windows 桌面版 OneNote 导出 Markdown，并保留笔记本/分区/页面层级 |
 | 🤖 ima 知识库 | 支持读取知识库目录树，按知识库、文件夹或文件勾选导出 |
 
 ### 📥 导入到平台
@@ -76,13 +79,19 @@ Author: `tllovesxs`
 | <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/evernote.svg" alt="Evernote" width="16"> 印象笔记 | 支持本地 Markdown 批量导入，并上传本地图片和附件 |
 | 🤖 ima 知识库 | 支持本地文件上传到知识库根目录或已有文件夹 |
 
+### 📚 教程
+
+| 平台 | 能力 |
+|------|------|
+| Notion | 展示官方 Markdown 导出迁移指南 |
+
 ## ✨ 主要特性
 
-- 🧭 统一桌面端：左侧按“导出 / 导入”分类展示平台入口。
+- 🧭 统一桌面端：左侧按“首页 / 平台中心 / 任务中心 / 设置”等工作台入口组织功能。
 - ✅ 目录选择：先读取目录，再选择全部或部分内容。
 - 📊 进度反馈：读取目录、导入、导出都有进度条和实时日志。
 - 🧾 任务历史：导入导出会保留最近任务记录，可复制任务报告，也可继续/重试未完成任务。
-- 🧩 Provider 架构：平台入口逐步插件化，新增平台时优先注册 provider，降低 UI 维护成本。
+- 🧩 开放 Provider 架构：支持 `provider.json + README.md + 可选脚本` 的社区插件，教程型平台也能直接展示在应用内。
 - 🧯 错误报告：用户日志和详细日志分离，反馈问题时可一键复制脱敏后的详细报告。
 - 🔁 增量更新：已导出的文档可以跳过，只补缺失内容。
 - 🖼️ 图片和附件处理：尽量把正文图片、附件下载或上传到目标平台。
@@ -98,7 +107,7 @@ Author: `tllovesxs`
 1. 打开 [GitHub Releases](https://github.com/tllovesxs/wandao/releases)。
 2. 下载对应系统的发行版。
 3. 安装或解压后打开 `Wandao`。
-4. 在左侧选择要使用的平台。
+4. 在左侧进入“平台中心”，选择要使用的平台。
 5. 按界面提示填写链接、登录、读取目录、选择范围并执行任务。
 
 > **macOS 用户注意**：从 GitHub 或 Gitee 下载的应用可能会被 macOS 标记隔离属性，首次打开可能提示“已损坏，无法打开”。这不是应用本身的问题，而是系统为了防止未签名应用运行所做的拦截。请在终端执行以下命令后再打开，路径需要替换为 `Wandao.app` 实际所在位置：
@@ -156,23 +165,31 @@ cd wandao
 
 ### 📤 导出知识库
 
-1. 选择左侧“导出”里的目标平台。
-2. 填写入口链接，或填写平台账号/API 配置。
-3. 第一次使用时点击“登录并保存凭证”或“保存 API 配置”。
-4. 点击“读取目录”。
-5. 勾选要导出的目录或文档。
-6. 点击“开始导出”。
+1. 进入“平台中心”，选择目标平台。
+2. 点击该平台的“导出”动作。
+3. 填写入口链接，或填写平台账号/API 配置。
+4. 第一次使用时点击“登录并保存凭证”或“保存 API 配置”。
+5. 点击“读取目录”。
+6. 勾选要导出的目录或文档。
+7. 点击“开始导出”。
 
 ### 📥 导入 Markdown
 
-1. 选择左侧“导入”里的目标平台。
-2. 选择本地 Markdown 目录。
-3. 按目标平台要求填写链接、API 配置或账号信息。
-4. 先“扫描目录”或“生成计划”。
-5. 先做“单篇/单文件导入测试”。
-6. 确认效果后再批量导入。
+1. 进入“平台中心”，选择目标平台。
+2. 点击该平台的“导入”动作。
+3. 选择本地 Markdown 目录。
+4. 按目标平台要求填写链接、API 配置或账号信息。
+5. 先“扫描目录”或“生成计划”。
+6. 先做“单篇/单文件导入测试”。
+7. 确认效果后再批量导入。
 
 飞书导入、语雀导入、印象笔记导入、ima 导入的详细步骤见 [使用教程](docs/使用教程.md)。
+
+### 📚 查看平台教程
+
+如果平台本身已经支持导入导出，或者暂时不适合稳定自动化，可以在“平台中心”查看对应平台的 Markdown 教程。
+
+社区贡献者也可以先提交教程型 provider，后续再逐步升级为自动化脚本。
 
 ## 🧠 配合 AI 学习项目
 
@@ -233,7 +250,7 @@ npm run build:mac:arm64
 
 ## License
 
-本项目采用 [Apache License 2.0](LICENSE) 开源。
+本项目采用 [GNU Affero General Public License v3.0](LICENSE) 开源。
 
 ---
 ## Star History
