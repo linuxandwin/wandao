@@ -208,6 +208,34 @@
               <input type="checkbox" id="yuque-import-update-existing" checked>
               <span>已存在文档则更新</span>
             </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="yuque-import-retry-failures">
+              <span>只重试上次失败的文档</span>
+            </label>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="yuque-import-request-timeout">接口超时秒</label>
+                <input type="number" id="yuque-import-request-timeout" value="90" min="10" step="10">
+              </div>
+              <div class="form-group">
+                <label for="yuque-import-upload-timeout">图片上传超时秒</label>
+                <input type="number" id="yuque-import-upload-timeout" value="180" min="30" step="10">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="yuque-import-retry-attempts">失败重试次数</label>
+                <input type="number" id="yuque-import-retry-attempts" value="3" min="1" max="6" step="1">
+              </div>
+              <div class="form-group">
+                <label for="yuque-import-retry-delay">重试等待秒</label>
+                <input type="number" id="yuque-import-retry-delay" value="1.2" min="0" step="0.1">
+              </div>
+              <div class="form-group">
+                <label for="yuque-import-upload-concurrency">资源上传并发</label>
+                <input type="number" id="yuque-import-upload-concurrency" value="2" min="1" max="4" step="1">
+              </div>
+            </div>
           </div>
         </details>
         <p class="helper-note">导入会按本地文件夹创建语雀目录，并上传 Markdown 中的本地图片和附件。凭证文件保存的是登录 Cookie，不保存密码。</p>
@@ -219,8 +247,10 @@
         <button class="btn-primary" id="yuque-import-plan" type="button">生成计划</button>
         <button class="btn-primary" id="yuque-import-one" type="button">单篇导入测试</button>
         <button class="btn-primary" id="yuque-import-export">批量导入</button>
+        <button class="btn-secondary" id="yuque-import-retry-failed" type="button">重试失败</button>
         <button class="btn-danger" id="yuque-import-stop" disabled>停止</button>
         <button class="btn-secondary" id="yuque-import-open-dir">打开目录</button>
+        <button class="btn-secondary" id="yuque-import-open-report" type="button">打开报告</button>
       </section>
     </div>
   </template>

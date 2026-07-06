@@ -11,6 +11,7 @@ resources, and rebuild the catalog tree through Yuque's web endpoints.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import html
 import json
@@ -18,6 +19,7 @@ import mimetypes
 import os
 import queue
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -58,8 +60,26 @@ PROJECT_DIR = SCRIPT_DIR
 DEFAULT_SOURCE_DIR = default_data_dir() / "exports" / "yuque"
 DEFAULT_CONFIG_FILE = default_state_path(".yuque_import_config.json")
 YUQUE_HOME_URL = "https://www.yuque.com"
-MARKDOWN_LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\n]+)\)")
+OBSIDIAN_EMBED_RE = re.compile(r"!\[\[([^\]\n]+)\]\]")
+HTML_IMG_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"'][^>]*>", re.I)
 EXPORT_FOOTER_RE = re.compile(r"\n---\n\n来源:[\s\S]*$", re.M)
+DEFAULT_REQUEST_TIMEOUT = 90
+DEFAULT_UPLOAD_TIMEOUT = 180
+DEFAULT_RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_DELAY = 1.2
+DEFAULT_UPLOAD_CONCURRENCY = 2
+MARKDOWN_DOC_EXTENSIONS = {".md", ".markdown", ".mdown"}
+
+REQUEST_TIMEOUT = DEFAULT_REQUEST_TIMEOUT
+UPLOAD_TIMEOUT = DEFAULT_UPLOAD_TIMEOUT
+RETRY_ATTEMPTS = DEFAULT_RETRY_ATTEMPTS
+RETRY_DELAY = DEFAULT_RETRY_DELAY
+UPLOAD_CONCURRENCY = DEFAULT_UPLOAD_CONCURRENCY
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 def default_config_path() -> Path:
@@ -79,6 +99,25 @@ def save_config(config_file: Path, data: dict[str, Any]) -> None:
     config_file.parent.mkdir(parents=True, exist_ok=True)
     safe_data = {key: value for key, value in data.items() if value not in (None, "")}
     config_file.write_text(json.dumps(safe_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def configure_runtime(args: argparse.Namespace) -> None:
+    global REQUEST_TIMEOUT, UPLOAD_TIMEOUT, RETRY_ATTEMPTS, RETRY_DELAY, UPLOAD_CONCURRENCY
+    REQUEST_TIMEOUT = max(10, int(getattr(args, "request_timeout", DEFAULT_REQUEST_TIMEOUT) or DEFAULT_REQUEST_TIMEOUT))
+    UPLOAD_TIMEOUT = max(30, int(getattr(args, "upload_timeout", DEFAULT_UPLOAD_TIMEOUT) or DEFAULT_UPLOAD_TIMEOUT))
+    RETRY_ATTEMPTS = max(1, int(getattr(args, "retry_attempts", DEFAULT_RETRY_ATTEMPTS) or DEFAULT_RETRY_ATTEMPTS))
+    RETRY_DELAY = max(0.0, float(getattr(args, "retry_delay", DEFAULT_RETRY_DELAY) or DEFAULT_RETRY_DELAY))
+    UPLOAD_CONCURRENCY = min(4, max(1, int(getattr(args, "upload_concurrency", DEFAULT_UPLOAD_CONCURRENCY) or DEFAULT_UPLOAD_CONCURRENCY)))
+
+
+def retry_sleep(attempt: int) -> None:
+    if RETRY_DELAY <= 0:
+        return
+    time.sleep(RETRY_DELAY * attempt)
+
+
+def is_retryable_http(code: int) -> bool:
+    return code in {408, 429, 500, 502, 503, 504}
 
 
 def config_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -121,7 +160,7 @@ def request_json(
     payload: dict[str, Any] | None = None,
     *,
     referer: str | None = None,
-    timeout: int = 60,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     url = f"https://{host}{path}"
     body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if method not in ("GET", "HEAD") else None
@@ -134,16 +173,31 @@ def request_json(
     if referer:
         headers["Referer"] = referer
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        if exc.code == 401:
-            raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
-        raise ExportError(f"语雀接口 HTTP {exc.code}：{raw[:1200]}") from exc
-    except urllib.error.URLError as exc:
-        raise ExportError(f"请求语雀接口失败：{exc}") from exc
+    raw = ""
+    timeout = timeout or REQUEST_TIMEOUT
+    last_error: BaseException | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            break
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 401:
+                raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS and is_retryable_http(exc.code):
+                retry_sleep(attempt)
+                continue
+            raise ExportError(f"语雀接口 HTTP {exc.code}：{raw[:1200]}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                retry_sleep(attempt)
+                continue
+            raise ExportError(f"请求语雀接口失败：{exc}") from exc
+    else:
+        raise ExportError(f"请求语雀接口失败：{last_error}")
     try:
         data = json.loads(raw) if raw else {}
     except json.JSONDecodeError as exc:
@@ -153,7 +207,7 @@ def request_json(
     return data
 
 
-def request_text(host: str, cookies: list[dict[str, Any]], path_or_url: str, *, timeout: int = 60) -> str:
+def request_text(host: str, cookies: list[dict[str, Any]], path_or_url: str, *, timeout: int | None = None) -> str:
     url = path_or_url if path_or_url.startswith("http") else f"https://{host}{path_or_url}"
     request = urllib.request.Request(
         url,
@@ -163,16 +217,28 @@ def request_text(host: str, cookies: list[dict[str, Any]], path_or_url: str, *, 
             "Cookie": cookies_for_url(cookies, url),
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        if exc.code == 401:
-            raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
-        raise ExportError(f"读取语雀页面 HTTP {exc.code}：{raw[:800]}") from exc
-    except urllib.error.URLError as exc:
-        raise ExportError(f"读取语雀页面失败：{exc}") from exc
+    timeout = timeout or REQUEST_TIMEOUT
+    last_error: BaseException | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 401:
+                raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS and is_retryable_http(exc.code):
+                retry_sleep(attempt)
+                continue
+            raise ExportError(f"读取语雀页面 HTTP {exc.code}：{raw[:800]}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                retry_sleep(attempt)
+                continue
+            raise ExportError(f"读取语雀页面失败：{exc}") from exc
+    raise ExportError(f"读取语雀页面失败：{last_error}")
 
 
 def parse_app_data(page_html: str) -> dict[str, Any]:
@@ -227,20 +293,147 @@ def slug_for_relative_path(relative_path: str) -> str:
 
 
 def is_remote_or_anchor(target: str) -> bool:
-    target = target.strip().strip("<>")
+    target = normalize_link_target(target)
     parsed = urllib.parse.urlparse(target)
     return bool(parsed.scheme in ("http", "https", "data", "mailto") or target.startswith("#"))
 
 
+def normalize_link_target(target: str) -> str:
+    target = html.unescape(str(target or "")).strip()
+    if target.startswith("<"):
+        close = target.find(">")
+        if close > 0:
+            return unescape_markdown_target(target[1:close].strip())
+    # Markdown allows an optional title after the URL, for example:
+    # ![alt](assets/a.png "title"). Keep spaces in filenames unless this exact title form is present.
+    match = re.match(r"^(?P<path>.+?)\s+\"[^\"]*\"\s*$", target) or re.match(r"^(?P<path>.+?)\s+'[^']*'\s*$", target)
+    if match:
+        path = match.group("path").strip()
+        if path:
+            return unescape_markdown_target(path.strip("<>"))
+    return unescape_markdown_target(target.strip("<>"))
+
+
+def unescape_markdown_target(target: str) -> str:
+    return re.sub(r"\\([\\(){}\[\]#.!_`*+\- ])", r"\1", target)
+
+
+def strip_local_url_suffix(target: str) -> str:
+    parsed = urllib.parse.urlparse(target)
+    return parsed.path if not parsed.scheme else target
+
+
+def is_markdown_doc_target(target: str) -> bool:
+    normalized = normalize_link_target(target)
+    if not normalized or is_remote_or_anchor(normalized):
+        return False
+    candidates = [normalized, strip_local_url_suffix(normalized)]
+    return any(Path(urllib.parse.unquote(candidate)).suffix.lower() in MARKDOWN_DOC_EXTENSIONS for candidate in candidates)
+
+
 def resolve_local_target(md_path: Path, target: str) -> Path | None:
-    target = target.strip().strip("<>")
+    target = normalize_link_target(target)
     if not target or is_remote_or_anchor(target):
         return None
-    parsed = urllib.parse.urlparse(target)
-    if parsed.scheme:
-        return None
-    local_path = (md_path.parent / urllib.parse.unquote(parsed.path)).resolve()
-    return local_path if local_path.exists() and local_path.is_file() else None
+    candidates = [target]
+    stripped = strip_local_url_suffix(target)
+    if stripped and stripped != target:
+        candidates.append(stripped)
+    for candidate in candidates:
+        parsed = urllib.parse.urlparse(candidate)
+        if parsed.scheme:
+            continue
+        local_path = (md_path.parent / urllib.parse.unquote(candidate)).resolve()
+        if local_path.exists() and local_path.is_file():
+            return local_path
+    return None
+
+
+def iter_markdown_scan_segments(markdown: str) -> list[tuple[int, str]]:
+    segments: list[tuple[int, str]] = []
+    in_fence = False
+    segment_start: int | None = None
+    segment_parts: list[str] = []
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        if re.match(r"^\s{0,3}(```|~~~)", line):
+            if not in_fence and segment_parts and segment_start is not None:
+                segments.append((segment_start, "".join(segment_parts)))
+                segment_parts = []
+                segment_start = None
+            in_fence = not in_fence
+            offset += len(line)
+            continue
+        if not in_fence:
+            if segment_start is None:
+                segment_start = offset
+            segment_parts.append(line)
+        offset += len(line)
+    if segment_parts and segment_start is not None:
+        segments.append((segment_start, "".join(segment_parts)))
+    return segments
+
+
+def iter_markdown_links(markdown: str) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for base, segment in iter_markdown_scan_segments(markdown):
+        index = 0
+        while index < len(segment):
+            bang = segment.startswith("![", index)
+            plain = segment.startswith("[", index)
+            if not bang and not plain:
+                index += 1
+                continue
+            label_start = index + (2 if bang else 1)
+            label_end = segment.find("]", label_start)
+            if label_end < 0 or label_end + 1 >= len(segment) or segment[label_end + 1] != "(":
+                index += 1
+                continue
+            target_start = label_end + 2
+            cursor = target_start
+            depth = 0
+            escaped = False
+            while cursor < len(segment):
+                char = segment[cursor]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif char in "\r\n":
+                    break
+                cursor += 1
+            if cursor >= len(segment) or segment[cursor] != ")":
+                index += 1
+                continue
+            links.append(
+                {
+                    "marker": "!" if bang else "",
+                    "label": segment[label_start:label_end],
+                    "target": segment[target_start:cursor],
+                    "start": base + index,
+                    "end": base + cursor + 1,
+                }
+            )
+            index = cursor + 1
+    return links
+
+
+def iter_extra_image_links(markdown: str) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for base, segment in iter_markdown_scan_segments(markdown):
+        for match in OBSIDIAN_EMBED_RE.finditer(segment):
+            target = match.group(1).split("|", 1)[0].strip()
+            links.append({"marker": "!", "label": Path(target).name, "target": target, "start": base + match.start(), "end": base + match.end(), "syntax": "obsidian"})
+        for match in HTML_IMG_RE.finditer(segment):
+            target = html.unescape(match.group(1).strip())
+            links.append({"marker": "!", "label": Path(target).name, "target": target, "start": base + match.start(), "end": base + match.end(), "syntax": "html"})
+    return links
 
 
 def is_image_path(path: Path) -> bool:
@@ -248,20 +441,39 @@ def is_image_path(path: Path) -> bool:
     return bool(mime and mime.startswith("image/"))
 
 
-def scan_local_resources(markdown: str, md_path: Path) -> list[dict[str, Any]]:
+def scan_local_resources(markdown: str, md_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     resources: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for is_image, text, target in MARKDOWN_LINK_RE.findall(markdown):
+    warnings: list[dict[str, Any]] = []
+    seen: dict[str, dict[str, Any]] = {}
+    for link in iter_markdown_links(markdown) + iter_extra_image_links(markdown):
+        target = str(link.get("target") or "")
+        normalized_target = normalize_link_target(target)
         local_path = resolve_local_target(md_path, target)
+        if is_markdown_doc_target(normalized_target):
+            # Markdown files are imported as documents, not uploaded as attachments.
+            continue
         if not local_path:
+            if normalized_target and not is_remote_or_anchor(normalized_target):
+                warnings.append({"target": normalized_target, "reason": "local_file_missing"})
             continue
         key = str(local_path)
         if key in seen:
+            aliases = seen[key].setdefault("targets", [])
+            if normalized_target and normalized_target not in aliases:
+                aliases.append(normalized_target)
             continue
-        kind = "image" if is_image or is_image_path(local_path) else "attachment"
-        resources.append({"path": local_path, "target": target, "kind": kind, "title": text or local_path.name})
-        seen.add(key)
-    return resources
+        kind = "image" if link.get("marker") == "!" or is_image_path(local_path) else "attachment"
+        resource = {
+            "path": local_path,
+            "target": normalized_target,
+            "targets": [normalized_target] if normalized_target else [],
+            "kind": kind,
+            "title": link.get("label") or local_path.name,
+            "syntax": link.get("syntax") or "markdown",
+        }
+        resources.append(resource)
+        seen[key] = resource
+    return resources, warnings
 
 
 def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
@@ -276,6 +488,7 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         body = strip_export_footer(text)
+        resources, resource_warnings = scan_local_resources(body, path)
         relative = path.relative_to(source_dir).as_posix()
         docs.append(
             {
@@ -287,7 +500,8 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
                 "level": max(0, len(rel_parts) - 1),
                 "folders": [clean_title(Path(part).stem) for part in rel_parts[:-1]],
                 "size": path.stat().st_size,
-                "resources": scan_local_resources(body, path),
+                "resources": resources,
+                "resourceWarnings": resource_warnings,
             }
         )
     if not docs:
@@ -342,14 +556,30 @@ def upload_resource(
             "Referer": book_url,
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        if exc.code == 401:
-            raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
-        raise ExportError(f"上传资源失败 HTTP {exc.code}：{raw[:1000]}") from exc
+    raw = ""
+    last_error: BaseException | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            break
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 401:
+                raise ExportError(f"语雀登录已失效，请重新点击“登录并保存凭证”后重试。HTTP 401：{raw[:800]}") from exc
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS and is_retryable_http(exc.code):
+                retry_sleep(attempt)
+                continue
+            raise ExportError(f"上传资源失败 HTTP {exc.code}：{raw[:1000]}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                retry_sleep(attempt)
+                continue
+            raise ExportError(f"上传资源失败：{exc}") from exc
+    else:
+        raise ExportError(f"上传资源失败：{last_error}")
     data = json.loads(raw or "{}")
     item = data.get("data") or {}
     if not item.get("url"):
@@ -357,25 +587,80 @@ def upload_resource(
     return item
 
 
+def upload_doc_resources(
+    host: str,
+    cookies: list[dict[str, Any]],
+    resources: list[dict[str, Any]],
+    doc_id: int,
+    book_url: str,
+) -> tuple[dict[str, dict[str, Any]], int, int]:
+    uploads: dict[str, dict[str, Any]] = {}
+    image_count = attachment_count = 0
+    if not resources:
+        return uploads, image_count, attachment_count
+
+    def upload_one(resource: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        path = Path(resource["path"])
+        try:
+            return resource, upload_resource(host, cookies, path, doc_id, book_url)
+        except Exception as exc:
+            raise ExportError(f"{path.name} 上传失败：{exc}") from exc
+
+    if UPLOAD_CONCURRENCY <= 1 or len(resources) <= 1:
+        results = [upload_one(resource) for resource in resources]
+    else:
+        results = []
+        max_workers = min(UPLOAD_CONCURRENCY, len(resources))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(upload_one, resource) for resource in resources]
+            for future in concurrent.futures.as_completed(futures):
+                results.append(future.result())
+
+    for resource, uploaded in results:
+        uploads[str(resource["path"])] = uploaded
+        if resource.get("kind") == "image":
+            image_count += 1
+        else:
+            attachment_count += 1
+    return uploads, image_count, attachment_count
+
+
 def replace_resource_links(
     markdown: str,
     resources: list[dict[str, Any]],
     uploads: dict[str, dict[str, Any]],
 ) -> str:
-    by_target: dict[str, str] = {}
+    by_target: dict[str, dict[str, str]] = {}
     for resource in resources:
         uploaded = uploads.get(str(resource["path"]))
         if uploaded and uploaded.get("url"):
-            by_target[str(resource["target"])] = str(uploaded["url"])
+            aliases = list(resource.get("targets") or []) or [resource.get("target")]
+            for alias in aliases:
+                normalized_target = normalize_link_target(str(alias or ""))
+                if normalized_target:
+                    by_target[normalized_target] = {
+                        "url": str(uploaded["url"]),
+                        "kind": str(resource.get("kind") or ""),
+                        "title": str(resource.get("title") or ""),
+                    }
 
-    def repl(match: re.Match[str]) -> str:
-        marker, label, target = match.groups()
-        replacement = by_target.get(target.strip().strip("<>"))
-        if not replacement:
-            return match.group(0)
-        return f"{marker}[{label}]({replacement})"
+    replacements = []
+    for link in iter_markdown_links(markdown) + iter_extra_image_links(markdown):
+        target = normalize_link_target(str(link.get("target") or ""))
+        uploaded = by_target.get(target)
+        if not uploaded:
+            continue
+        label = str(link.get("label") or uploaded.get("title") or Path(target).name)
+        marker = "!" if uploaded.get("kind") == "image" else str(link.get("marker") or "")
+        replacements.append((int(link["start"]), int(link["end"]), f"{marker}[{label}]({uploaded['url']})"))
 
-    return MARKDOWN_LINK_RE.sub(repl, markdown)
+    if not replacements:
+        return markdown
+
+    result = markdown
+    for start, end, replacement in sorted(replacements, reverse=True):
+        result = result[:start] + replacement + result[end:]
+    return result
 
 
 def existing_docs_by_slug(host: str, cookies: list[dict[str, Any]], book_id: int, book_url: str) -> dict[str, dict[str, Any]]:
@@ -531,28 +816,24 @@ def import_one_doc(
     placeholder = f"# {doc['title']}\n\n正在上传资源并写入正文...\n"
     existing_doc = existing.get(doc["slug"])
     action = "created"
+    has_resources = bool(doc["resources"])
     if existing_doc:
         if skip_existing or not update_existing:
             return {"action": "skipped", "id": existing_doc.get("id"), "slug": doc["slug"], "title": doc["title"]}, toc
         doc_id = int(existing_doc["id"])
         action = "updated"
     else:
-        created = create_doc(host, cookies, book_id, doc["title"], doc["slug"], placeholder, book_url)
+        created = create_doc(host, cookies, book_id, doc["title"], doc["slug"], placeholder if has_resources else doc["body"], book_url)
         doc_id = int(created["id"])
         existing[doc["slug"]] = created
 
-    uploads: dict[str, dict[str, Any]] = {}
-    image_count = attachment_count = 0
-    for resource in doc["resources"]:
-        uploaded = upload_resource(host, cookies, Path(resource["path"]), doc_id, book_url)
-        uploads[str(resource["path"])] = uploaded
-        if resource.get("kind") == "image":
-            image_count += 1
-        else:
-            attachment_count += 1
+    uploads, image_count, attachment_count = upload_doc_resources(host, cookies, doc["resources"], doc_id, book_url)
 
-    body = replace_resource_links(doc["body"], doc["resources"], uploads)
-    updated = update_doc(host, cookies, doc_id, book_id, doc["title"], doc["slug"], body, book_url)
+    if has_resources or existing_doc:
+        body = replace_resource_links(doc["body"], doc["resources"], uploads)
+        updated = update_doc(host, cookies, doc_id, book_id, doc["title"], doc["slug"], body, book_url)
+    else:
+        updated = created
     node = catalog_node_for_doc(toc, doc_id)
     if not node:
         node = add_doc_to_catalog(host, cookies, book_id, doc_id, book_url)
@@ -578,12 +859,25 @@ def import_one_doc(
 
 
 def import_docs(args: argparse.Namespace) -> dict[str, Any]:
+    configure_runtime(args)
     config = config_args(args)
     target_url = config.get("targetBookUrl") or getattr(args, "target_book_url", None)
     host, namespace, book_url = parse_target_book(target_url)
     source_dir = Path(config.get("sourceDir") or getattr(args, "source_dir", None) or DEFAULT_SOURCE_DIR).resolve()
+    report_path = source_dir / "00-语雀导入报告.json"
+    plan_report_path = source_dir / "00-语雀导入计划.json"
     cookies = load_auth_cookies_or_fail(args, host)
     docs = scan_markdown_docs(source_dir)
+    if getattr(args, "retry_failures", False):
+        if not report_path.exists():
+            raise ExportError(f"没有找到上次导入报告，无法重试失败项：{report_path}")
+        previous = json.loads(report_path.read_text(encoding="utf-8"))
+        failed_paths = {str(item.get("relativePath") or "") for item in previous.get("failures") or [] if item.get("relativePath")}
+        if not failed_paths:
+            raise ExportError("上次导入报告中没有失败项，不需要重试。")
+        docs = [doc for doc in docs if doc["relativePath"] in failed_paths]
+        if not docs:
+            raise ExportError("上次失败项在当前 Markdown 目录中没有匹配文件。")
     if getattr(args, "doc_path", None):
         wanted = Path(args.doc_path).resolve()
         docs = [doc for doc in docs if Path(doc["path"]).resolve() == wanted]
@@ -599,10 +893,33 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
     existing = existing_docs_by_slug(host, cookies, book_id, book_url)
     image_count = sum(1 for doc in docs for res in doc["resources"] if res.get("kind") == "image")
     attachment_count = sum(1 for doc in docs for res in doc["resources"] if res.get("kind") == "attachment")
+    missing_resource_count = sum(len(doc.get("resourceWarnings") or []) for doc in docs)
+    remote_image_items = [
+        {
+            "relativePath": doc["relativePath"],
+            "target": normalize_link_target(str(link.get("target") or "")),
+            "syntax": str(link.get("syntax") or "markdown"),
+        }
+        for doc in docs
+        for link in iter_markdown_links(doc["body"]) + iter_extra_image_links(doc["body"])
+        if link.get("marker") == "!" and is_remote_or_anchor(str(link.get("target") or ""))
+    ]
+    remote_image_count = len(remote_image_items)
+    resource_warning_items = [
+        {"relativePath": doc["relativePath"], **warning}
+        for doc in docs
+        for warning in doc.get("resourceWarnings") or []
+    ]
+    large_images = [
+        {"relativePath": doc["relativePath"], "image": Path(res["path"]).name, "bytes": Path(res["path"]).stat().st_size}
+        for doc in docs
+        for res in doc["resources"]
+        if res.get("kind") == "image" and Path(res["path"]).exists() and Path(res["path"]).stat().st_size >= 3 * 1024 * 1024
+    ]
     folders = sorted({"/".join(doc["folders"][:i]) for doc in docs for i in range(1, len(doc["folders"]) + 1)})
 
     if args.plan or args.dry_run:
-        return {
+        plan_report = {
             "provider": "yuque-import",
             "readOnly": True,
             "host": host,
@@ -613,9 +930,20 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             "folderCount": len(folders),
             "localImageCount": image_count,
             "localAttachmentCount": attachment_count,
+            "missingLocalResourceCount": missing_resource_count,
+            "remoteImageCount": remote_image_count,
+            "largeImageCount": len(large_images),
+            "largeImages": large_images,
+            "resourceWarnings": resource_warning_items,
+            "remoteImages": remote_image_items,
+            "reportFile": str(plan_report_path),
+            "retryFailures": bool(getattr(args, "retry_failures", False)),
+            "uploadConcurrency": UPLOAD_CONCURRENCY,
             "sampleDocs": [{k: doc[k] for k in ("relativePath", "title", "slug", "level", "size")} for doc in docs[:10]],
             "capabilities": ["create_update_markdown", "preserve_directory_tree", "upload_local_images", "upload_local_attachments"],
         }
+        plan_report_path.write_text(json.dumps(plan_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return plan_report
 
     if not args.yes:
         raise ExportError("写入语雀需要显式确认，请追加 --yes。")
@@ -681,9 +1009,18 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
         "attachmentUploads": uploaded_attachments,
         "stopped": stopped,
         "failures": failures,
+        "reportFile": str(report_path),
+        "retryFailures": bool(getattr(args, "retry_failures", False)),
+        "missingLocalResourceCount": missing_resource_count,
+        "remoteImageCount": remote_image_count,
+        "largeImageCount": len(large_images),
+        "largeImages": large_images,
+        "resourceWarnings": resource_warning_items,
+        "remoteImages": remote_image_items,
+        "uploadConcurrency": UPLOAD_CONCURRENCY,
         "importedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
-    (source_dir / "00-语雀导入报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 
@@ -916,6 +1253,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--yes", action="store_true", help="Confirm write operations")
     parser.add_argument("--update-existing", action="store_true", default=True, help="Update documents with the same generated slug")
     parser.add_argument("--skip-existing", action="store_true", help="Skip existing documents")
+    parser.add_argument("--retry-failures", action="store_true", help="Only retry documents listed in the last import report failures")
+    parser.add_argument("--request-timeout", type=int, default=DEFAULT_REQUEST_TIMEOUT, help="Yuque API request timeout seconds")
+    parser.add_argument("--upload-timeout", type=int, default=DEFAULT_UPLOAD_TIMEOUT, help="Yuque resource upload timeout seconds")
+    parser.add_argument("--retry-attempts", type=int, default=DEFAULT_RETRY_ATTEMPTS, help="Retry attempts for timeout/429/5xx requests")
+    parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="Base retry delay seconds")
+    parser.add_argument("--upload-concurrency", type=int, default=DEFAULT_UPLOAD_CONCURRENCY, help="Concurrent resource uploads per document, 1-4")
     return parser.parse_args(argv)
 
 
@@ -958,9 +1301,16 @@ def main(argv: list[str]) -> int:
         "failureCount",
         "localImageCount",
         "localAttachmentCount",
+        "missingLocalResourceCount",
+        "remoteImageCount",
+        "largeImageCount",
         "imageUploads",
         "attachmentUploads",
+        "reportFile",
+        "retryFailures",
+        "uploadConcurrency",
         "stopped",
+        "failures",
         "cookieCount",
         "authFile",
     )
