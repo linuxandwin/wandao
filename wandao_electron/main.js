@@ -540,13 +540,15 @@ function pythonCommand() {
   return process.platform === 'win32' ? 'python' : 'python3';
 }
 
-function pythonEnv() {
+function pythonEnv(extra = {}) {
   const env = {
     ...process.env,
     PYTHONIOENCODING: 'utf-8',
     PYTHONUNBUFFERED: '1',
     PYTHONUTF8: '1',
-    WANDAO_DATA_DIR: app.getPath('userData')
+    WANDAO_DATA_DIR: app.getPath('userData'),
+    WANDAO_STRUCTURED_LOGS: '1',
+    ...extra
   };
   const browserPath = selectedBrowserPath();
   if (browserPath) {
@@ -599,23 +601,30 @@ function compressDocIdArgs(scriptName, args) {
 }
 
 function parseLastJson(stdout) {
-  const trimmed = stdout.trim();
+  const raw = String(stdout || '');
+  const lines = raw
+    .split(/\r?\n/)
+    .filter((line) => !line.startsWith('@@WANDAO_LOG@@'));
+  const trimmed = lines.join('\n').trim();
   if (!trimmed) {
     return {};
   }
   try {
     return JSON.parse(trimmed);
   } catch (_error) {
-    const start = Math.max(trimmed.lastIndexOf('\n{'), trimmed.lastIndexOf('\n['));
-    if (start >= 0) {
-      const jsonText = trimmed.slice(start + 1);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index].trimStart();
+      if (!line.startsWith('{') && !line.startsWith('[')) {
+        continue;
+      }
+      const jsonText = lines.slice(index).join('\n').trim();
       try {
         return JSON.parse(jsonText);
       } catch (_ignored) {
-        return { output: stdout };
+        // Keep scanning upward: pretty-printed JSON may contain nested objects.
       }
     }
-    return { output: stdout };
+    return { output: raw };
   }
 }
 
@@ -995,7 +1004,10 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     const proc = spawn(pythonCommand(), pythonArgs, {
       cwd: path.dirname(scriptPath),
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: pythonEnv()
+      env: pythonEnv({
+        WANDAO_TASK_ID: options?.taskId || '',
+        WANDAO_PROVIDER_ID: options?.providerId || ''
+      })
     });
 
     if (options?.stdinText) {
@@ -1028,7 +1040,13 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
       if (code === 0) {
         resolve({ success: true, data: parseLastJson(stdout) });
       } else {
-        resolve({ success: false, error: stderr || stdout || `Python exited with code ${code}`, code });
+        const parsed = parseLastJson(stdout);
+        resolve({
+          success: false,
+          error: stderr || stdout || `Python exited with code ${code}`,
+          code,
+          data: parsed && Object.keys(parsed).length ? parsed : null
+        });
       }
     });
 

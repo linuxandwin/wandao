@@ -30,6 +30,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from wandao_logging import emit_legacy
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 FORBIDDEN_FILENAME_CHARS = r'<>:"/\|?*'
@@ -113,8 +115,8 @@ class TocNode:
     section_id: str = ""
 
 
-def emit(message: str) -> None:
-    print(message, flush=True)
+def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
+    emit_legacy("onenote-export", message, event=event, level=level, **fields)
 
 
 def emit_json(data: dict[str, Any]) -> None:
@@ -804,6 +806,12 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
     image_success = 0
     attachment_success = 0
     exported = 0
+    emit(
+        f"开始导出 OneNote 页面：共 {len(targets)} 篇。",
+        event="task.started",
+        totals={"documents": len(targets), "selected": len(selected), "skippedExisting": skipped},
+        output=str(output),
+    )
 
     mht_root: Path
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -832,10 +840,25 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         total = len(targets)
         for index, (page, md_path) in enumerate(targets, start=1):
             try:
+                emit(
+                    f"开始转换 OneNote 页面：{page.title}",
+                    event="document.export.started",
+                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                )
                 stats = convert_mht_to_markdown(mht_by_id[page.id], md_path)
                 image_success += stats["images"]
                 attachment_success += stats["attachments"]
                 exported += 1
+                emit(
+                    f"OneNote 页面导出完成：{page.title}",
+                    event="document.export.completed",
+                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                    stats={
+                        "imageSuccessInDoc": stats["images"],
+                        "attachmentSuccessInDoc": stats["attachments"],
+                        "chars": stats["chars"],
+                    },
+                )
             except Exception as exc:  # noqa: BLE001 - keep exporting other pages.
                 failures.append({
                     "id": page.id,
@@ -843,11 +866,27 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
                     "path": str(md_path),
                     "error": str(exc),
                 })
+                emit(
+                    f"OneNote 页面导出失败：{page.title}：{exc}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": page.id, "title": page.title, "index": index, "path": str(md_path)},
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
             if index % max(1, args.progress_every) == 0 or index == total:
                 emit(
                     "progress "
                     f"{index}/{total} exported={exported} skipped={skipped} "
-                    f"image_success={image_success} failures={len(failures)}"
+                    f"image_success={image_success} failures={len(failures)}",
+                    event="task.progress",
+                    progress={"current": index, "total": total},
+                    stats={
+                        "exportedDocs": exported,
+                        "skippedDocs": skipped,
+                        "imageSuccess": image_success,
+                        "attachmentSuccess": attachment_success,
+                        "failureCount": len(failures),
+                    },
                 )
     finally:
         if temp_dir is not None:
@@ -865,7 +904,21 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         "elapsedSeconds": round(time.time() - started, 2),
         "keptMht": str(mht_root) if args.keep_mht else "",
     }
-    (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path = output / "00-导出报告.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    emit(
+        "OneNote 导出完成" if not failures else f"OneNote 导出完成，但有 {len(failures)} 个失败项",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        reportFile=str(report_path),
+        stats={
+            "exportedDocs": exported,
+            "skippedDocs": skipped,
+            "imageSuccess": image_success,
+            "attachmentSuccess": attachment_success,
+            "failureCount": len(failures),
+        },
+    )
     return report
 
 
@@ -898,9 +951,21 @@ def main(argv: list[str] | None = None) -> int:
         emit_json(result)
         return 0 if not result.get("failures") else 1
     except ExportError as exc:
+        emit(
+            f"OneNote 导出任务失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(str(exc), file=sys.stderr, flush=True)
         return 1
     except Exception as exc:  # noqa: BLE001
+        emit(
+            f"OneNote 导出任务失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"OneNote 导出失败：{exc}", file=sys.stderr, flush=True)
         return 1
 

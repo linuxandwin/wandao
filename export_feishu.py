@@ -797,6 +797,15 @@ def localize_images(
             success += 1
         except Exception as exc:
             failures.append({"url": url, "error": str(exc)})
+            emit(
+                args,
+                f"图片下载失败：{url[:160]}：{exc}",
+                event="resource.download.failed",
+                level="error",
+                step="download_image",
+                resource={"type": "image", "url": url, "host": urllib.parse.urlparse(url).netloc},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
             if not keep_remote:
                 markdown = markdown.replace(url, "")
     return markdown, success, failures
@@ -1075,6 +1084,15 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         image_failures: list[dict[str, Any]] = []
         stopped = False
 
+        emit(
+            args,
+            f"开始导出飞书文档：共 {len(docs)} 篇。",
+            event="task.started",
+            totals={"documents": len(docs), "nodes": len(ordered)},
+            output=str(output),
+            entryKind=entry_kind,
+        )
+
         for index, doc in enumerate(docs, start=1):
             if stop_requested(args):
                 stopped = True
@@ -1086,6 +1104,12 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 skipped += 1
                 continue
             try:
+                emit(
+                    args,
+                    f"开始导出文档：{doc.get('title') or token}",
+                    event="document.export.started",
+                    doc={"id": token, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                )
                 result = fetch_doc_markdown(cdp, doc, args)
                 markdown = result.get("markdown") or f"# {doc.get('title') or '未命名'}\n"
                 markdown += (
@@ -1109,18 +1133,42 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
                 exported += 1
+                emit(
+                    args,
+                    f"文档导出完成：{doc.get('title') or token}",
+                    event="document.export.completed",
+                    doc={"id": token, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors)},
+                )
             except ExportStopped:
                 stopped = True
                 emit(args, "收到停止请求，当前文档未写入，正在结束。")
                 break
             except Exception as exc:
                 failures.append({"title": doc.get("title") or "", "wiki_token": token, "error": str(exc)})
+                emit(
+                    args,
+                    f"文档导出失败：{doc.get('title') or token}：{exc}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": token, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
 
             if index % args.progress_every == 0 or index == len(docs):
                 emit(
                     args,
                     f"progress {index}/{len(docs)} exported={exported} skipped={skipped} "
                     f"image_success={image_success} failures={len(failures)}",
+                    event="task.progress",
+                    progress={"current": index, "total": len(docs)},
+                    stats={
+                        "exportedDocs": exported,
+                        "skippedDocs": skipped,
+                        "imageSuccess": image_success,
+                        "failureCount": len(failures),
+                        "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+                    },
                 )
 
         write_index(output, tree, ordered, doc_paths, selected_doc_ids or None)
@@ -1148,6 +1196,20 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        emit(
+            args,
+            "飞书导出完成" if not stopped else "飞书导出已停止",
+            event="task.completed" if not stopped else "task.stopped",
+            level="success" if not stopped else "warn",
+            reportFile=str(output / "00-导出报告.json"),
+            stats={
+                "exportedDocs": exported,
+                "skippedDocs": skipped,
+                "failureCount": len(failures),
+                "imageSuccess": image_success,
+                "imageFailureCount": report.get("imageFailureCount", 0),
+            },
+        )
         return report
     finally:
         cdp.close()
@@ -1644,9 +1706,17 @@ def main(argv: list[str]) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except ExportStopped as exc:
+        emit(args, f"飞书导出任务已停止：{exc}", event="task.stopped", level="warn")
         print(f"Stopped: {exc}", file=sys.stderr)
         return 130
     except Exception as exc:
+        emit(
+            args,
+            f"飞书导出任务失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

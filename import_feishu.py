@@ -1805,7 +1805,13 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     drive_folder_token_from_config = bool(drive_folder_token)
 
     try:
-        emit(args, f"准备导入单篇 Markdown：{md_path.name}")
+        emit(
+            args,
+            f"准备导入单篇 Markdown：{md_path.name}",
+            event="document.import.started",
+            doc={"title": title, "path": str(md_path)},
+            step="prepare",
+        )
         if not getattr(args, "skip_image_repair", False) and collect_local_images_from_markdown(md_path):
             upload_md_path, upload_temp_dir = prepare_markdown_for_image_blocks(md_path)
             if upload_temp_dir:
@@ -1825,7 +1831,14 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         emit(args, f"已上传 Markdown，file_token={file_token}")
         import_mount_key = get_config_value(args, "import_mount_key")
         ticket = create_import_task(access_token, file_token, import_title, import_mount_key)
-        emit(args, f"已创建导入任务，ticket={ticket}")
+        emit(
+            args,
+            f"已创建导入任务，ticket={ticket}",
+            event="api.response",
+            step="create_import_task",
+            doc={"title": title, "path": str(md_path)},
+            result={"ticket": ticket},
+        )
         import_result = poll_import_task(args, access_token, ticket)
         doc_token = str(import_result.get("token") or import_result.get("doc_token") or import_result.get("obj_token") or "")
         doc_url = str(import_result.get("url") or "")
@@ -1846,7 +1859,13 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     if not getattr(args, "skip_image_repair", False):
         local_image_count = len(collect_local_images_from_markdown(md_path))
         if local_image_count:
-            emit(args, f"准备修复本地图片：{local_image_count} 张")
+            emit(
+                args,
+                f"准备修复本地图片：{local_image_count} 张",
+                event="resource.upload.started",
+                doc={"title": title, "path": str(md_path)},
+                stats={"localImageCount": local_image_count},
+            )
             try:
                 image_repair_result = repair_imported_local_images(
                     args,
@@ -1854,9 +1873,23 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                     document_id=doc_token,
                     md_path=md_path,
                 )
+                emit(
+                    args,
+                    f"本地图片修复完成：成功 {image_repair_result.get('replacedCount', 0)} / {local_image_count}",
+                    event="resource.upload.completed",
+                    doc={"title": title, "path": str(md_path), "id": doc_token},
+                    stats=image_repair_result,
+                )
             except Exception as exc:
                 image_repair_error = str(exc)
-                emit(args, f"图片修复失败：{image_repair_error}")
+                emit(
+                    args,
+                    f"图片修复失败：{image_repair_error}",
+                    event="resource.upload.failed",
+                    level="error",
+                    doc={"title": title, "path": str(md_path), "id": doc_token},
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
                 if getattr(args, "require_image_repair", False):
                     raise
 
@@ -1890,7 +1923,7 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                 "然后重新执行导入。"
             ) from exc
 
-    return {
+    result_payload = {
         "provider": "feishu-import-openapi",
         "sourceFile": str(md_path),
         "title": title,
@@ -1907,6 +1940,18 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         "movedToWiki": bool(move_result),
         "moveResult": move_result,
     }
+    emit(
+        args,
+        f"单篇 Markdown 导入完成：{title}",
+        event="document.import.completed",
+        doc={"title": title, "path": str(md_path), "id": doc_token},
+        result={
+            "movedToWiki": bool(move_result),
+            "renamed": bool(rename_result),
+            "imageRepairFailureCount": (image_repair_result or {}).get("failureCount", 0) if image_repair_result else 0,
+        },
+    )
+    return result_payload
 
 
 def wiki_token_from_move_result(result: dict[str, Any]) -> str:
@@ -2030,12 +2075,24 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
     imported: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
 
-    emit(args, f"开始批量导入 Markdown：host={host} total={len(docs)}")
+    emit(
+        args,
+        f"开始批量导入 Markdown：host={host} total={len(docs)}",
+        event="task.started",
+        totals={"documents": len(docs)},
+        target={"host": host, "spaceId": get_config_value(args, "space_id"), "parentWikiToken": root_parent_token},
+        sourceDir=str(Path(args.source_dir).resolve()),
+    )
     for index, doc in enumerate(docs, start=1):
         if stop_requested(args):
             raise ExportStopped("用户停止了飞书批量导入任务")
         relative_path = str(doc.get("relativePath") or "")
-        emit(args, f"[{index}/{len(docs)}] 导入：{relative_path}")
+        emit(
+            args,
+            f"[{index}/{len(docs)}] 导入：{relative_path}",
+            event="document.import.started",
+            doc={"path": relative_path, "index": index},
+        )
         try:
             parent_token = ensure_folder_parent_token(
                 args,
@@ -2065,14 +2122,39 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
                     "imageRepairError": result.get("imageRepairError") or "",
                 }
             )
+            emit(
+                args,
+                f"文档导入完成：{relative_path}",
+                event="document.import.completed",
+                doc={"path": relative_path, "index": index, "id": wiki_token},
+                result={
+                    "movedToWiki": bool(result.get("movedToWiki")),
+                    "renamed": bool(result.get("renamed")),
+                    "imageRepairError": result.get("imageRepairError") or "",
+                },
+            )
         except Exception as exc:
             failures.append({"relativePath": relative_path, "error": str(exc)})
-            emit(args, f"失败：{relative_path}：{exc}")
+            emit(
+                args,
+                f"失败：{relative_path}：{exc}",
+                event="document.import.failed",
+                level="error",
+                doc={"path": relative_path, "index": index},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
             if isinstance(exc, (FeishuPermissionError, FeishuWikiNodePermissionError)):
                 emit(args, "检测到配置级权限问题，已停止批量导入。请修复权限后重新执行。")
                 break
+        emit(
+            args,
+            f"progress {index}/{len(docs)} imported={len(imported)} failures={len(failures)}",
+            event="task.progress",
+            progress={"current": index, "total": len(docs)},
+            stats={"importedDocs": len(imported), "failureCount": len(failures), "folderPageCount": len(folder_pages)},
+        )
 
-    return {
+    result = {
         "provider": "feishu-import-openapi-batch",
         "sourceDir": str(Path(args.source_dir).resolve()),
         "total": len(docs),
@@ -2083,6 +2165,14 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         "imported": imported,
         "failures": failures,
     }
+    emit(
+        args,
+        "飞书 Markdown 批量导入完成",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        stats={"importedDocs": len(imported), "failureCount": len(failures), "folderPageCount": len(folder_pages)},
+    )
+    return result
 
 
 def login_and_save_auth(args: argparse.Namespace) -> dict[str, Any]:

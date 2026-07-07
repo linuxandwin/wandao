@@ -24,13 +24,15 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from wandao_logging import emit_legacy
+
 
 class ExportError(RuntimeError):
     """User-facing export error."""
 
 
-def emit(message: str) -> None:
-    print(message, flush=True)
+def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
+    emit_legacy("yinxiang-export", message, event=event, level=level, **fields)
 
 
 def emit_json(data: dict[str, Any]) -> None:
@@ -508,6 +510,13 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
     failures: list[dict[str, str]] = []
     md_files: list[Path] = []
     total = len(enex_files)
+    emit(
+        f"开始转换印象笔记 ENEX：共 {total} 篇。",
+        event="task.started",
+        totals={"documents": total},
+        output=str(output),
+        source=str(enex_dir),
+    )
 
     for index, enex_file in enumerate(enex_files, start=1):
         relative = enex_file.relative_to(enex_dir)
@@ -515,6 +524,11 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
         md_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            emit(
+                f"开始转换印象笔记：{relative.as_posix()}",
+                event="document.export.started",
+                doc={"path": relative.as_posix(), "index": index, "output": str(md_path)},
+            )
             root = ET.parse(enex_file).getroot()
             notes = list(root.findall("note"))
             if not notes:
@@ -532,18 +546,33 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
             md_path.write_text(md_text, encoding="utf-8")
             md_files.append(md_path)
             exported += 1
+            emit(
+                f"印象笔记转换完成：{relative.as_posix()}",
+                event="document.export.completed",
+                doc={"id": guid, "path": relative.as_posix(), "index": index, "output": str(md_path)},
+            )
         except Exception as exc:
             failures.append({"file": str(enex_file), "error": str(exc)})
+            emit(
+                f"印象笔记转换失败：{relative.as_posix()}：{exc}",
+                event="document.export.failed",
+                level="error",
+                doc={"path": relative.as_posix(), "index": index, "output": str(md_path)},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
 
         if index % max(1, args.progress_every) == 0 or index == total:
             emit(
                 "progress "
                 f"done={index} queued={max(0, total - index)} "
-                f"exported={exported} skipped={skipped} failures={len(failures)}"
+                f"exported={exported} skipped={skipped} failures={len(failures)}",
+                event="task.progress",
+                progress={"current": index, "total": total},
+                stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
             )
 
     write_index(output, md_files)
-    return {
+    report = {
         "provider": "yinxiang",
         "database": str(args.database),
         "output": str(output),
@@ -553,6 +582,13 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
         "failureCount": len(failures),
         "failures": failures,
     }
+    emit(
+        "印象笔记导出完成" if not failures else f"印象笔记导出完成，但有 {len(failures)} 个失败项",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
+    )
+    return report
 
 
 def write_index(output: Path, md_files: list[Path]) -> None:
@@ -714,13 +750,23 @@ def main(argv: list[str]) -> int:
         emit_json(result)
         return 0
     except KeyboardInterrupt:
-        emit("已停止。")
+        emit("已停止。", event="task.stopped", level="warn")
         return 130
     except ExportError as exc:
-        emit(str(exc))
+        emit(
+            str(exc),
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         return 1
     except Exception as exc:
-        emit(f"印象笔记导出失败：{exc}")
+        emit(
+            f"印象笔记导出失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         return 1
 
 

@@ -57,6 +57,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from wandao_logging import WandaoLogger, print_text, structured_logs_enabled
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -420,12 +422,42 @@ def open_tab(port: int, url: str) -> None:
         urllib.request.urlopen(request, timeout=5).close()
 
 
-def emit(args: argparse.Namespace | None, message: str) -> None:
+def emit(
+    args: argparse.Namespace | None,
+    message: str,
+    *,
+    event: str = "log.message",
+    level: str = "info",
+    **fields: Any,
+) -> None:
     callback = getattr(args, "log_callback", None) if args is not None else None
     if callback:
         callback(message)
+    elif structured_logs_enabled():
+        provider = str(
+            getattr(args, "provider_id", "")
+            or getattr(args, "provider", "")
+            or os.environ.get("WANDAO_PROVIDER_ID")
+            or "aliyun-thoughts"
+        )
+        WandaoLogger(provider=provider).event(event, message, level=level, **fields)
     else:
-        print(message, flush=True)
+        print_text(message)
+
+
+def compact_error(error: Any, limit: int = 600) -> str:
+    text = str(error or "未知错误").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > limit:
+        return f"{text[:limit]}..."
+    return text
+
+
+def write_json_report(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def default_auth_path() -> Path:
@@ -1450,10 +1482,38 @@ def download_image(url: str, dest_dir: Path, timeout: int) -> Path:
     if existing:
         return existing
 
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = response.read()
-        ext = guess_extension(url, response.headers.get("Content-Type"))
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://thoughts.aliyun.com/",
+    }
+    last_error: BaseException | None = None
+    for attempt in range(1, 4):
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = response.read()
+                ext = guess_extension(url, response.headers.get("Content-Type"))
+            break
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            last_error = exc
+            if exc.code in (408, 429, 500, 502, 503, 504) and attempt < 3:
+                time.sleep(0.8 * attempt)
+                continue
+            hint = ""
+            if exc.code in (401, 403):
+                hint = "。通常是阿里云/云效图片签名过期、账号无权访问，或图片服务禁止外部下载。请重新登录后重新导出，确保图片能在浏览器中打开"
+            raise ExportError(f"图片下载失败 HTTP {exc.code}{hint}：{raw[:300]}") from exc
+        except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(0.8 * attempt)
+                continue
+            raise ExportError(f"图片下载失败，已重试 {attempt} 次：{exc}") from exc
+    else:
+        raise ExportError(f"图片下载失败，已重试 3 次：{last_error}") from last_error
     name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12] + "." + ext
     target = dest_dir / name
     if not target.exists():
@@ -1498,7 +1558,17 @@ def localize_images(
             except ExportStopped:
                 raise
             except Exception as exc:
-                failures.append({"url": url, "error": str(exc)})
+                error = compact_error(exc, 800)
+                failures.append({"url": url, "error": error})
+                emit(
+                    args,
+                    f"图片下载失败：{url[:160]}：{compact_error(error, 320)}",
+                    event="resource.download.failed",
+                    level="error",
+                    step="download_image",
+                    resource={"type": "image", "url": url, "host": urllib.parse.urlparse(url).netloc},
+                    error={"message": error},
+                )
     else:
         max_workers = min(workers, len(urls))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1512,7 +1582,17 @@ def localize_images(
                 except ExportStopped:
                     raise
                 except Exception as exc:
-                    failures.append({"url": url, "error": str(exc)})
+                    error = compact_error(exc, 800)
+                    failures.append({"url": url, "error": error})
+                    emit(
+                        args,
+                        f"图片下载失败：{url[:160]}：{compact_error(error, 320)}",
+                        event="resource.download.failed",
+                        level="error",
+                        step="download_image",
+                        resource={"type": "image", "url": url, "host": urllib.parse.urlparse(url).netloc},
+                        error={"message": error},
+                    )
 
     for url, rel_path in replacements.items():
         markdown = markdown.replace(url, rel_path)
@@ -1778,6 +1858,14 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
         docs = [node for node in nodes if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)]
         ensure_document_parent_dirs(docs, planned_doc_paths, output)
+        emit(
+            args,
+            f"开始导出阿里云 Thoughts 文档：共 {len(docs)} 篇。",
+            event="task.started",
+            provider="aliyun-thoughts",
+            totals={"documents": len(docs), "nodes": len(nodes)},
+            output=str(output),
+        )
         existing_docs = scan_exported_docs(output)
         doc_paths: dict[str, Path] = {}
         failures: list[dict[str, str]] = []
@@ -1788,8 +1876,43 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
         exported = 0
         skipped = 0
         stopped = False
+        processed = 0
+        report_path = output / "00-导出报告.json"
+
+        def build_report(*, completed: bool = False) -> dict[str, Any]:
+            return {
+                "workspaceId": workspace_id,
+                "workspaceUrl": workspace_url,
+                "output": str(output),
+                "totalNodes": len(nodes),
+                "totalDocs": len(docs),
+                "selectedDocs": len(docs),
+                "processedDocs": processed,
+                "exportedDocs": exported,
+                "skippedDocs": skipped,
+                "stopped": stopped,
+                "completed": completed,
+                "apiExportedDocs": api_exported,
+                "domFallbackDocs": dom_fallback,
+                "imageSuccess": image_success,
+                "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+                "imageWorkers": int(getattr(args, "image_workers", 6) or 1),
+                "requestCount": int(getattr(args, "_request_count", 0) or 0),
+                "requestDelaySeconds": float(getattr(args, "request_delay", 0.1) or 0),
+                "requestJitterSeconds": float(getattr(args, "request_jitter", 0.0) or 0),
+                "failures": failures,
+                "imageFailures": image_failures,
+                "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+
+        def save_partial_report() -> None:
+            try:
+                write_json_report(report_path, build_report(completed=False))
+            except Exception as exc:
+                emit(args, f"写入阿里云 Thoughts 导出报告失败：{compact_error(exc, 240)}")
 
         for index, doc in enumerate(docs, start=1):
+            processed = index
             if stop_requested(args):
                 stopped = True
                 emit(args, "收到停止请求，正在结束并写入已完成的导出结果。")
@@ -1804,6 +1927,12 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 continue
 
             try:
+                emit(
+                    args,
+                    f"开始导出文档：{doc.title}",
+                    event="document.export.started",
+                    doc={"id": doc.id, "title": doc.title, "index": index, "path": str(md_path)},
+                )
                 if api_client and api_user_id:
                     try:
                         result = extract_document_api(api_client, workspace_id, doc, api_user_id, args.render_timeout, args)
@@ -1837,44 +1966,62 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 md_path.write_text(markdown, encoding="utf-8")
                 doc_paths[doc.id] = md_path
                 exported += 1
+                emit(
+                    args,
+                    f"文档导出完成：{doc.title}",
+                    event="document.export.completed",
+                    doc={"id": doc.id, "title": doc.title, "index": index, "path": str(md_path)},
+                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors)},
+                )
             except ExportStopped:
                 stopped = True
                 emit(args, "收到停止请求，当前文档未写入，正在结束。")
                 break
             except Exception as exc:
                 failures.append({"id": doc.id, "title": doc.title, "error": str(exc)})
+                emit(
+                    args,
+                    f"文档导出失败：{doc.title}：{compact_error(exc, 360)}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": doc.id, "title": doc.title, "index": index, "path": str(md_path)},
+                    error={"message": str(exc), "type": type(exc).__name__},
+                )
 
+            save_partial_report()
             if index % args.progress_every == 0 or index == len(docs):
                 emit(
                     args,
                     f"progress {index}/{len(docs)} exported={exported} skipped={skipped} "
                     f"image_success={image_success} failures={len(failures)}",
+                    event="task.progress",
+                    progress={"current": index, "total": len(docs)},
+                    stats={
+                        "exportedDocs": exported,
+                        "skippedDocs": skipped,
+                        "imageSuccess": image_success,
+                        "failureCount": len(failures),
+                        "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+                    },
                 )
 
         write_index(output, root_items, children, folder_paths, doc_paths, selected_doc_ids or None)
-        report = {
-            "workspaceId": workspace_id,
-            "workspaceUrl": workspace_url,
-            "output": str(output),
-            "totalNodes": len(nodes),
-            "totalDocs": len(docs),
-            "selectedDocs": len(docs),
-            "exportedDocs": exported,
-            "skippedDocs": skipped,
-            "stopped": stopped,
-            "apiExportedDocs": api_exported,
-            "domFallbackDocs": dom_fallback,
-            "imageSuccess": image_success,
-            "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
-            "imageWorkers": int(getattr(args, "image_workers", 6) or 1),
-            "requestCount": int(getattr(args, "_request_count", 0) or 0),
-            "requestDelaySeconds": float(getattr(args, "request_delay", 0.1) or 0),
-            "requestJitterSeconds": float(getattr(args, "request_jitter", 0.0) or 0),
-            "failures": failures,
-            "imageFailures": image_failures,
-            "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        }
-        (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report = build_report(completed=not stopped and processed >= len(docs))
+        write_json_report(report_path, report)
+        emit(
+            args,
+            "阿里云 Thoughts 导出完成" if report.get("completed") else "阿里云 Thoughts 导出已停止",
+            event="task.completed" if report.get("completed") else "task.stopped",
+            level="success" if report.get("completed") else "warn",
+            reportFile=str(report_path),
+            stats={
+                "exportedDocs": exported,
+                "skippedDocs": skipped,
+                "failureCount": len(failures),
+                "imageSuccess": image_success,
+                "imageFailureCount": report.get("imageFailureCount", 0),
+            },
+        )
         return report
     finally:
         if cdp is not None:
@@ -2379,6 +2526,13 @@ def main(argv: list[str]) -> int:
         print("Interrupted.", file=sys.stderr)
         return 130
     except Exception as exc:
+        emit(
+            args,
+            f"导出任务失败：{compact_error(exc, 500)}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Export failed: {exc}", file=sys.stderr)
         return 1
     if args.scan_toc:

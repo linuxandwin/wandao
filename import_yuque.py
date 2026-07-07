@@ -68,6 +68,9 @@ DEFAULT_UPLOAD_TIMEOUT = 180
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY = 1.2
 DEFAULT_UPLOAD_CONCURRENCY = 2
+FAILURE_LOG_LIMIT = 8
+COMMON_FAILURE_ABORT_AFTER = 10
+REMOTE_IMAGE_POLICIES = {"link", "keep", "remove"}
 MARKDOWN_DOC_EXTENSIONS = {".md", ".markdown", ".mdown"}
 
 REQUEST_TIMEOUT = DEFAULT_REQUEST_TIMEOUT
@@ -114,6 +117,34 @@ def retry_sleep(attempt: int) -> None:
     if RETRY_DELAY <= 0:
         return
     time.sleep(RETRY_DELAY * attempt)
+
+
+def parse_json_object(text: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(text) if text else None
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def format_yuque_api_error(status: int, raw: str) -> str:
+    data = parse_json_object(raw)
+    if not data:
+        return f"语雀接口 HTTP {status}：{raw[:1200]}"
+
+    code = str(data.get("code") or "").strip()
+    message = str(data.get("message") or data.get("msg") or "").strip()
+    limit = data.get("limit")
+    details = []
+    if code:
+        details.append(f"code={code}")
+    if message:
+        details.append(f"message={message}")
+    if limit not in (None, ""):
+        details.append(f"limit={limit}")
+    if details:
+        return f"语雀接口 HTTP {status}：" + "，".join(details) + f"，raw={raw[:1200]}"
+    return f"语雀接口 HTTP {status}：{raw[:1200]}"
 
 
 def is_retryable_http(code: int) -> bool:
@@ -189,7 +220,7 @@ def request_json(
             if attempt < RETRY_ATTEMPTS and is_retryable_http(exc.code):
                 retry_sleep(attempt)
                 continue
-            raise ExportError(f"语雀接口 HTTP {exc.code}：{raw[:1200]}") from exc
+            raise ExportError(format_yuque_api_error(exc.code, raw)) from exc
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             last_error = exc
             if attempt < RETRY_ATTEMPTS:
@@ -205,6 +236,38 @@ def request_json(
     if isinstance(data, dict) and data.get("status") and int(data.get("status") or 0) >= 400:
         raise ExportError(f"语雀接口返回错误：{data.get('message') or data}")
     return data
+
+
+def compact_error(error: Any, limit: int = 600) -> str:
+    text = str(error or "未知错误").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > limit:
+        return f"{text[:limit]}..."
+    return text
+
+
+def failure_signature(error: Any) -> str:
+    text = compact_error(error, 220)
+    text = re.sub(r'"[^"]{1,120}"', '"..."', text)
+    text = re.sub(r"'[^']{1,120}'", "'...'", text)
+    text = re.sub(r"\b\d{4,}\b", "<num>", text)
+    return text[:220]
+
+
+def fatal_yuque_error_message(error: Any) -> str:
+    text = compact_error(error, 1200)
+    if "max_doc_note_number" in text or "文档数超过限制" in text:
+        limit_match = re.search(r"(?:limit[=:]|\"limit\"\s*:\s*)(\d+)", text)
+        limit_text = f"当前限制 {limit_match.group(1)} 篇" if limit_match else "当前知识库或账号已达到文档数量限制"
+        return f"语雀文档数超过限制（{limit_text}），请清理目标知识库、升级语雀空间，或换一个可写知识库后重试。"
+    return ""
+
+
+def write_json_report(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def request_text(host: str, cookies: list[dict[str, Any]], path_or_url: str, *, timeout: int | None = None) -> str:
@@ -509,6 +572,35 @@ def scan_markdown_docs(source_dir: Path) -> list[dict[str, Any]]:
     return docs
 
 
+def markdown_safe_label(value: str) -> str:
+    label = re.sub(r"\s+", " ", str(value or "").strip()) or "远程图片"
+    return label.replace("[", "\\[").replace("]", "\\]")
+
+
+def remote_image_replacement(link: dict[str, Any], policy: str) -> str:
+    target = normalize_link_target(str(link.get("target") or ""))
+    if policy == "remove":
+        return f"<!-- 远程图片已跳过：{target} -->"
+    label = markdown_safe_label(str(link.get("label") or Path(urllib.parse.urlparse(target).path).name or "远程图片"))
+    return f"[{label}]({target})"
+
+
+def rewrite_remote_images(markdown: str, policy: str) -> tuple[str, int]:
+    if policy == "keep":
+        return markdown, 0
+    replacements: list[tuple[int, int, str]] = []
+    for link in iter_markdown_links(markdown) + iter_extra_image_links(markdown):
+        target = normalize_link_target(str(link.get("target") or ""))
+        if link.get("marker") == "!" and is_remote_or_anchor(target):
+            replacements.append((int(link["start"]), int(link["end"]), remote_image_replacement(link, policy)))
+    if not replacements:
+        return markdown, 0
+    result = markdown
+    for start, end, replacement in sorted(replacements, reverse=True):
+        result = result[:start] + replacement + result[end:]
+    return result, len(replacements)
+
+
 def multipart_body(fields: dict[str, Any], files: list[tuple[str, str, bytes, str]]) -> tuple[str, bytes]:
     boundary = "----wandao" + uuid.uuid4().hex
     chunks: list[bytes] = []
@@ -780,7 +872,8 @@ def create_doc(
     data = request_json(host, cookies, "POST", "/api/docs", payload, referer=book_url)
     doc = data.get("data") or {}
     if not doc.get("id"):
-        raise ExportError(f"创建语雀文档失败：{title}")
+        detail = data.get("message") or data.get("error") or data
+        raise ExportError(f"创建语雀文档失败：{title}。语雀返回：{compact_error(detail)}")
     return doc
 
 
@@ -798,7 +891,8 @@ def update_doc(
     data = request_json(host, cookies, "PUT", f"/api/docs/{doc_id}", payload, referer=book_url)
     doc = data.get("data") or {}
     if not doc.get("id"):
-        raise ExportError(f"更新语雀文档失败：{title}")
+        detail = data.get("message") or data.get("error") or data
+        raise ExportError(f"更新语雀文档失败：{title}。语雀返回：{compact_error(detail)}")
     return doc
 
 
@@ -868,6 +962,9 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
     plan_report_path = source_dir / "00-语雀导入计划.json"
     cookies = load_auth_cookies_or_fail(args, host)
     docs = scan_markdown_docs(source_dir)
+    remote_image_policy = str(getattr(args, "remote_image_policy", "link") or "link").strip().lower()
+    if remote_image_policy not in REMOTE_IMAGE_POLICIES:
+        raise ExportError(f"未知远程图片处理策略：{remote_image_policy}")
     if getattr(args, "retry_failures", False):
         if not report_path.exists():
             raise ExportError(f"没有找到上次导入报告，无法重试失败项：{report_path}")
@@ -885,6 +982,15 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             raise ExportError(f"单篇测试文件不在 Markdown 目录内：{wanted}")
     if getattr(args, "max_import", 0) and args.max_import > 0:
         docs = docs[: args.max_import]
+
+    emit(
+        args,
+        f"开始语雀 Markdown 导入准备：共 {len(docs)} 篇。",
+        event="task.started",
+        totals={"documents": len(docs)},
+        sourceDir=str(source_dir),
+        target={"host": host, "namespace": namespace},
+    )
 
     book_data = load_target_book(host, cookies, book_url)
     book = book_data["book"]
@@ -905,6 +1011,20 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
         if link.get("marker") == "!" and is_remote_or_anchor(str(link.get("target") or ""))
     ]
     remote_image_count = len(remote_image_items)
+    remote_image_converted_count = 0
+    remote_image_will_convert_count = 0 if remote_image_policy == "keep" else remote_image_count
+    should_rewrite_remote_images = remote_image_count and remote_image_policy != "keep" and not (args.plan or args.dry_run)
+    if should_rewrite_remote_images:
+        for doc in docs:
+            doc["body"], converted = rewrite_remote_images(doc["body"], remote_image_policy)
+            remote_image_converted_count += converted
+        emit(
+            args,
+            f"检测到远程图片 {remote_image_count} 个，已按策略 {remote_image_policy} 处理 {remote_image_converted_count} 个，"
+            "本地图片仍会上传到语雀。",
+        )
+    elif remote_image_count and remote_image_policy == "keep":
+        emit(args, f"检测到远程图片 {remote_image_count} 个，将保留原始远程图片地址；如果这些地址 403，语雀可能无法创建文档。")
     resource_warning_items = [
         {"relativePath": doc["relativePath"], **warning}
         for doc in docs
@@ -932,6 +1052,10 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             "localAttachmentCount": attachment_count,
             "missingLocalResourceCount": missing_resource_count,
             "remoteImageCount": remote_image_count,
+            "remoteImagePolicy": remote_image_policy,
+            "remoteImageConvertedCount": 0,
+            "remoteImageWillConvertCount": remote_image_will_convert_count,
+            "remoteImageHint": "远程图片不会被万能导上传；默认会在导入时转为普通链接，避免语雀抓取 403 图片导致整篇失败。",
             "largeImageCount": len(large_images),
             "largeImages": large_images,
             "resourceWarnings": resource_warning_items,
@@ -942,7 +1066,7 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
             "sampleDocs": [{k: doc[k] for k in ("relativePath", "title", "slug", "level", "size")} for doc in docs[:10]],
             "capabilities": ["create_update_markdown", "preserve_directory_tree", "upload_local_images", "upload_local_attachments"],
         }
-        plan_report_path.write_text(json.dumps(plan_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_report(plan_report_path, plan_report)
         return plan_report
 
     if not args.yes:
@@ -953,14 +1077,68 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
     failures: list[dict[str, str]] = []
     imported_docs: list[dict[str, Any]] = []
     stopped = False
+    processed = 0
+    consecutive_failures = 0
+    failure_signatures: dict[str, int] = {}
+
+    def build_report(*, aborted: bool = False, abort_reason: str = "") -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "provider": "yuque-import",
+            "host": host,
+            "namespace": namespace,
+            "book": book,
+            "sourceDir": str(source_dir),
+            "totalDocs": len(docs),
+            "processedDocs": processed,
+            "createdDocs": created,
+            "updatedDocs": updated,
+            "skippedDocs": skipped,
+            "failureCount": len(failures),
+            "folderCount": len(folders),
+            "imageUploads": uploaded_images,
+            "attachmentUploads": uploaded_attachments,
+            "stopped": stopped,
+            "aborted": aborted,
+            "abortReason": abort_reason,
+            "failures": failures,
+            "reportFile": str(report_path),
+            "retryFailures": bool(getattr(args, "retry_failures", False)),
+            "missingLocalResourceCount": missing_resource_count,
+            "remoteImageCount": remote_image_count,
+            "remoteImagePolicy": remote_image_policy,
+            "remoteImageConvertedCount": remote_image_converted_count,
+            "remoteImageWillConvertCount": remote_image_will_convert_count,
+            "largeImageCount": len(large_images),
+            "largeImages": large_images,
+            "resourceWarnings": resource_warning_items,
+            "remoteImages": remote_image_items,
+            "uploadConcurrency": UPLOAD_CONCURRENCY,
+            "importedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        if not aborted:
+            report.pop("abortReason", None)
+        return report
+
+    def save_partial_report(*, aborted: bool = False, abort_reason: str = "") -> None:
+        try:
+            write_json_report(report_path, build_report(aborted=aborted, abort_reason=abort_reason))
+        except Exception as exc:
+            emit(args, f"写入语雀导入报告失败：{compact_error(exc, 240)}")
 
     for index, doc in enumerate(docs, start=1):
+        processed = index
         if stop_requested(args):
             stopped = True
             emit(args, "收到停止请求，正在结束。")
             break
         check_stopped(args)
         try:
+            emit(
+                args,
+                f"开始导入文档：{doc.get('relativePath')}",
+                event="document.import.started",
+                doc={"title": doc.get("title", ""), "path": doc.get("relativePath", ""), "index": index},
+            )
             result, toc = import_one_doc(
                 host,
                 cookies,
@@ -979,48 +1157,99 @@ def import_docs(args: argparse.Namespace) -> dict[str, Any]:
                 updated += 1
             else:
                 skipped += 1
+            consecutive_failures = 0
             uploaded_images += int(result.get("imageUploads") or 0)
             uploaded_attachments += int(result.get("attachmentUploads") or 0)
+            emit(
+                args,
+                f"文档导入完成：{doc.get('relativePath')}",
+                event="document.import.completed",
+                doc={"title": doc.get("title", ""), "path": doc.get("relativePath", ""), "index": index},
+                result=result,
+            )
         except ExportStopped:
             stopped = True
             emit(args, "收到停止请求，当前文档未完成，正在结束。")
             break
         except Exception as exc:
-            failures.append({"relativePath": doc["relativePath"], "error": str(exc)})
+            error_text = compact_error(exc, 1200)
+            fatal_message = fatal_yuque_error_message(error_text)
+            failure: dict[str, str] = {"relativePath": doc["relativePath"], "title": doc.get("title", ""), "error": error_text}
+            if fatal_message:
+                failure["category"] = "语雀文档数量限制"
+                failure["suggestion"] = fatal_message
+            failures.append(failure)
+            consecutive_failures += 1
+            signature = failure_signature(error_text)
+            failure_signatures[signature] = failure_signatures.get(signature, 0) + 1
+            if len(failures) <= FAILURE_LOG_LIMIT:
+                visible_error = fatal_message or error_text
+                emit(
+                    args,
+                    f"失败 {len(failures)}：{doc['relativePath']}：{compact_error(visible_error, 360)}",
+                    event="document.import.failed",
+                    level="error",
+                    doc={"title": doc.get("title", ""), "path": doc.get("relativePath", ""), "index": index},
+                    error={"message": error_text, "category": failure.get("category", "")},
+                    suggestion=failure.get("suggestion", ""),
+                )
+            elif len(failures) == FAILURE_LOG_LIMIT + 1:
+                emit(args, f"已连续出现较多失败，后续失败原因会继续写入报告：{report_path}")
+
+            if fatal_message:
+                save_partial_report(aborted=True, abort_reason=fatal_message)
+                raise ExportError(f"{fatal_message}第一条失败：{doc['relativePath']}。已生成部分报告：{report_path}") from exc
+
+            abort_after = min(COMMON_FAILURE_ABORT_AFTER, max(1, len(docs)))
+            common_failures = max(failure_signatures.values() or [0])
+            if (
+                created + updated + skipped == 0
+                and consecutive_failures >= abort_after
+                and common_failures >= max(3, abort_after // 2)
+            ):
+                first_failure = failures[0]
+                abort_reason = (
+                    f"前 {consecutive_failures} 篇文档连续创建/更新失败，疑似目标语雀知识库没有写入权限、"
+                    f"登录态不可写、目标 URL 不是可编辑知识库、远程图片 403 导致语雀抓取失败，或语雀接口拒绝创建。"
+                    f"第一条失败：{first_failure.get('relativePath')}：{first_failure.get('error')}"
+                )
+                save_partial_report(aborted=True, abort_reason=abort_reason)
+                raise ExportError(f"{abort_reason}。已生成部分报告：{report_path}")
         emit(
             args,
             f"progress {index}/{len(docs)} created={created} updated={updated} skipped={skipped} "
             f"images={uploaded_images} attachments={uploaded_attachments} failures={len(failures)}",
+            event="task.progress",
+            progress={"current": index, "total": len(docs)},
+            stats={
+                "createdDocs": created,
+                "updatedDocs": updated,
+                "skippedDocs": skipped,
+                "imageSuccess": uploaded_images,
+                "attachmentUploads": uploaded_attachments,
+                "failureCount": len(failures),
+            },
         )
+        if failures or index % 10 == 0:
+            save_partial_report()
 
-    report = {
-        "provider": "yuque-import",
-        "host": host,
-        "namespace": namespace,
-        "book": book,
-        "sourceDir": str(source_dir),
-        "totalDocs": len(docs),
-        "createdDocs": created,
-        "updatedDocs": updated,
-        "skippedDocs": skipped,
-        "failureCount": len(failures),
-        "folderCount": len(folders),
-        "imageUploads": uploaded_images,
-        "attachmentUploads": uploaded_attachments,
-        "stopped": stopped,
-        "failures": failures,
-        "reportFile": str(report_path),
-        "retryFailures": bool(getattr(args, "retry_failures", False)),
-        "missingLocalResourceCount": missing_resource_count,
-        "remoteImageCount": remote_image_count,
-        "largeImageCount": len(large_images),
-        "largeImages": large_images,
-        "resourceWarnings": resource_warning_items,
-        "remoteImages": remote_image_items,
-        "uploadConcurrency": UPLOAD_CONCURRENCY,
-        "importedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = build_report()
+    write_json_report(report_path, report)
+    emit(
+        args,
+        "语雀 Markdown 导入完成" if not stopped else "语雀 Markdown 导入已停止",
+        event="task.completed" if not stopped else "task.stopped",
+        level="success" if not stopped else "warn",
+        reportFile=str(report_path),
+        stats={
+            "createdDocs": created,
+            "updatedDocs": updated,
+            "skippedDocs": skipped,
+            "failureCount": len(failures),
+            "imageSuccess": uploaded_images,
+            "attachmentUploads": uploaded_attachments,
+        },
+    )
     return report
 
 
@@ -1259,6 +1488,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--retry-attempts", type=int, default=DEFAULT_RETRY_ATTEMPTS, help="Retry attempts for timeout/429/5xx requests")
     parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="Base retry delay seconds")
     parser.add_argument("--upload-concurrency", type=int, default=DEFAULT_UPLOAD_CONCURRENCY, help="Concurrent resource uploads per document, 1-4")
+    parser.add_argument(
+        "--remote-image-policy",
+        choices=sorted(REMOTE_IMAGE_POLICIES),
+        default="link",
+        help="How to handle remote image URLs before importing: link keeps the document import stable, keep leaves image syntax unchanged, remove drops them.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1286,6 +1521,13 @@ def main(argv: list[str]) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
+        emit(
+            args,
+            f"语雀导入任务失败：{compact_error(exc, 500)}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Import failed: {exc}", file=sys.stderr)
         return 1
     keys = (
@@ -1303,6 +1545,9 @@ def main(argv: list[str]) -> int:
         "localAttachmentCount",
         "missingLocalResourceCount",
         "remoteImageCount",
+        "remoteImagePolicy",
+        "remoteImageConvertedCount",
+        "remoteImageWillConvertCount",
         "largeImageCount",
         "imageUploads",
         "attachmentUploads",

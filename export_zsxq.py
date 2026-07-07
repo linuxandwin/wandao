@@ -1916,6 +1916,16 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         root_sequence = 0
         folder_sequences: dict[str, int] = {}
         output_key = str(output.resolve()).lower()
+        source_count = len(toc_items) if use_toc else len(links)
+        emit(
+            args,
+            f"开始导出知识星球内容：共 {source_count} 个来源条目。",
+            event="task.started",
+            totals={"documents": source_count},
+            output=str(output),
+            sourceMode="toc" if use_toc else "links",
+            entryUrl=entry_url,
+        )
 
         def allocate_sequence(base_dir: Path) -> int:
             nonlocal root_sequence
@@ -1965,6 +1975,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 if overview_needs_comment_update and overview_existing:
                     overview_path = overview_existing
                     comments_updated_existing += 1
+                emit(
+                    args,
+                    f"开始导出知识星球专栏正文：{entry.get('title') or '专栏正文'}",
+                    event="document.export.started",
+                    doc={"title": entry.get("title") or "专栏正文", "index": 0, "path": str(overview_path)},
+                )
                 markdown = entry.get("markdown") or "# 专栏正文\n"
                 if args.include_comments:
                     total_comments += int(entry.get("commentCount") or 0)
@@ -1990,8 +2006,25 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 image_success += count
                 if img_errors:
                     image_failures.append({"document": "专栏正文", "path": str(overview_path), "failures": img_errors})
+                    for failure in img_errors:
+                        emit(
+                            args,
+                            f"知识星球图片下载失败：专栏正文：{failure.get('error') or failure.get('url') or ''}",
+                            event="resource.download.failed",
+                            level="error",
+                            doc={"title": "专栏正文", "path": str(overview_path)},
+                            resource={"type": "image", "url": failure.get("url", "")},
+                            error={"message": failure.get("error", "")},
+                        )
                 overview_path.write_text(markdown, encoding="utf-8")
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_path)})
+                emit(
+                    args,
+                    f"知识星球专栏正文导出完成：{entry.get('title') or '专栏正文'}",
+                    event="document.export.completed",
+                    doc={"title": entry.get("title") or "专栏正文", "index": 0, "path": str(overview_path)},
+                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors)},
+                )
 
         queue_links: list[tuple[dict[str, Any], int]] = []
         seen_urls: set[str] = set()
@@ -2130,6 +2163,12 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     md_path = next_markdown_path(current_output, title)
                     child_output = current_output
+                emit(
+                    args,
+                    f"开始导出知识星球文档：{title}",
+                    event="document.export.started",
+                    doc={"title": title, "index": exported + skipped + len(failures) + 1, "path": str(md_path), "source": href},
+                )
                 total_comments += int(item.get("commentCount") or 0)
                 markdown = append_source_meta(raw_markdown, item)
                 markdown, count, img_errors = localize_images(
@@ -2143,10 +2182,27 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 image_success += count
                 if img_errors:
                     image_failures.append({"document": title, "path": str(md_path), "failures": img_errors})
+                    for failure in img_errors:
+                        emit(
+                            args,
+                            f"知识星球图片下载失败：{title}：{failure.get('error') or failure.get('url') or ''}",
+                            event="resource.download.failed",
+                            level="error",
+                            doc={"title": title, "path": str(md_path), "source": href},
+                            resource={"type": "image", "url": failure.get("url", "")},
+                            error={"message": failure.get("error", "")},
+                        )
                 md_path.write_text(markdown, encoding="utf-8")
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
                 exported += 1
+                emit(
+                    args,
+                    f"知识星球文档导出完成：{title}",
+                    event="document.export.completed",
+                    doc={"title": title, "path": str(md_path), "source": href},
+                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors), "children": len(children)},
+                )
 
                 if depth < args.max_depth:
                     for child in children:
@@ -2157,15 +2213,30 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                             queue_links.append((dict(child_link, kind="link", outputDir=str(child_output)), depth + 1))
             except ExportStopped:
                 stopped = True
-                emit(args, "收到停止请求，当前文档未写入，正在结束。")
+                emit(args, "收到停止请求，当前文档未写入，正在结束。", event="task.stopped", level="warn")
                 break
             except SkipDocument as exc:
                 skipped += 1
                 if exc.reason == "video-topic":
                     skipped_video += 1
-                emit(args, f"跳过：{exc.title or href} ({exc.reason})")
+                emit(
+                    args,
+                    f"跳过：{exc.title or href} ({exc.reason})",
+                    event="document.export.failed",
+                    level="warn",
+                    doc={"title": exc.title or href, "source": href},
+                    error={"message": exc.reason},
+                )
             except Exception as exc:
                 failures.append({"title": link.get("text") or "", "href": href, "error": str(exc)})
+                emit(
+                    args,
+                    f"知识星球文档导出失败：{link.get('text') or href}：{exc}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"title": link.get("text") or "", "source": href},
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
 
             done = exported + skipped + len(failures)
             total_hint = len(toc_items) if use_toc else len(links)
@@ -2180,6 +2251,15 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     f"done={done} queued={queued} source_links={total_hint} "
                     f"exported={exported} skipped={skipped} failures={len(failures)} "
                     f"elapsed={format_duration(elapsed)} eta={format_duration(eta)}",
+                    event="task.progress",
+                    progress={"current": done, "total": max(total_hint, done + queued)},
+                    stats={
+                        "exportedDocs": exported,
+                        "skippedDocs": skipped,
+                        "failureCount": len(failures),
+                        "imageSuccess": image_success,
+                        "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+                    },
                 )
 
         write_index(output, entry.get("title") or "知识星球导出", exported_rows)

@@ -23,13 +23,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from wandao_logging import emit_legacy
+
 
 class ImportErrorForUser(RuntimeError):
     """User-facing import error."""
 
 
-def emit(message: str) -> None:
-    print(message, flush=True)
+def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
+    emit_legacy("yinxiang-import", message, event=event, level=level, **fields)
 
 
 def emit_json(data: dict[str, Any]) -> None:
@@ -454,14 +456,38 @@ def import_one(args: argparse.Namespace) -> dict[str, Any]:
     if not md_path:
         raise ImportErrorForUser("未找到可导入的 Markdown 文件。")
     md_path = md_path.resolve()
+    emit(
+        f"开始导入印象笔记 Markdown：{md_path.name}",
+        event="task.started",
+        totals={"documents": 1},
+        source=str(md_path),
+    )
     store = note_store(args.database, args.retry)
+    emit(
+        f"开始导入文档：{md_path.name}",
+        event="document.import.started",
+        doc={"path": str(md_path), "index": 1},
+    )
     created = import_markdown_file(args, store, md_path)
-    return {
+    report = {
         "provider": "yinxiang-import",
         "mode": "one",
         "importedCount": 1,
         "imported": [created],
     }
+    emit(
+        f"印象笔记文档导入完成：{created.get('title') or md_path.name}",
+        event="document.import.completed",
+        doc={"path": str(md_path), "id": created.get("guid", ""), "title": created.get("title", ""), "index": 1},
+        stats={"attachmentSuccess": created.get("resourceCount", 0)},
+    )
+    emit(
+        "印象笔记 Markdown 导入完成",
+        event="task.completed",
+        level="success",
+        stats={"importedDocs": 1, "failureCount": 0},
+    )
+    return report
 
 
 def import_all(args: argparse.Namespace) -> dict[str, Any]:
@@ -472,22 +498,50 @@ def import_all(args: argparse.Namespace) -> dict[str, Any]:
     imported: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     total = len(files)
+    emit(
+        f"开始批量导入印象笔记 Markdown：共 {total} 篇。",
+        event="task.started",
+        totals={"documents": total},
+        sourceDir=str(args.source_dir.resolve()),
+    )
 
     for index, md_path in enumerate(files, start=1):
         try:
-            imported.append(import_markdown_file(args, store, md_path))
+            emit(
+                f"开始导入文档：{md_path.relative_to(args.source_dir.resolve()).as_posix()}",
+                event="document.import.started",
+                doc={"path": str(md_path), "index": index},
+            )
+            result = import_markdown_file(args, store, md_path)
+            imported.append(result)
+            emit(
+                f"印象笔记文档导入完成：{result.get('title') or md_path.name}",
+                event="document.import.completed",
+                doc={"path": str(md_path), "id": result.get("guid", ""), "title": result.get("title", ""), "index": index},
+                stats={"attachmentSuccess": result.get("resourceCount", 0)},
+            )
         except Exception as exc:
             failures.append({"path": str(md_path), "error": str(exc)})
+            emit(
+                f"印象笔记文档导入失败：{md_path.name}：{exc}",
+                event="document.import.failed",
+                level="error",
+                doc={"path": str(md_path), "index": index},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
         if args.request_delay > 0 and index < total:
             time.sleep(args.request_delay)
         if index % max(1, args.progress_every) == 0 or index == total:
             emit(
                 "progress "
                 f"done={index} queued={max(0, total - index)} "
-                f"imported={len(imported)} failures={len(failures)}"
+                f"imported={len(imported)} failures={len(failures)}",
+                event="task.progress",
+                progress={"current": index, "total": total},
+                stats={"importedDocs": len(imported), "failureCount": len(failures)},
             )
 
-    return {
+    report = {
         "provider": "yinxiang-import",
         "mode": "all",
         "sourceDir": str(args.source_dir.resolve()),
@@ -497,6 +551,13 @@ def import_all(args: argparse.Namespace) -> dict[str, Any]:
         "imported": imported,
         "failures": failures,
     }
+    emit(
+        "印象笔记 Markdown 导入完成" if not failures else f"印象笔记 Markdown 导入完成，但有 {len(failures)} 个失败项",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        stats={"importedDocs": len(imported), "failureCount": len(failures)},
+    )
+    return report
 
 
 def run_gui() -> int:
@@ -668,13 +729,23 @@ def main(argv: list[str]) -> int:
             return 0
         raise ImportErrorForUser("请指定 --scan-source、--import-one 或 --import-all。")
     except KeyboardInterrupt:
-        emit("已停止。")
+        emit("已停止。", event="task.stopped", level="warn")
         return 130
     except ImportErrorForUser as exc:
-        emit(str(exc))
+        emit(
+            str(exc),
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         return 1
     except Exception as exc:
-        emit(f"印象笔记导入失败：{exc}")
+        emit(
+            f"印象笔记导入失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         return 1
 
 

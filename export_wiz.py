@@ -965,6 +965,13 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
         failures: list[dict[str, str]] = []
         image_failures: list[dict[str, str]] = []
         total = len(docs)
+        emit(
+            args,
+            f"开始导出为知笔记：共 {total} 篇。",
+            event="task.started",
+            totals={"documents": total},
+            output=str(output),
+        )
 
         for index, doc in enumerate(docs, start=1):
             md_path = doc_paths[doc.doc_guid]
@@ -972,16 +979,59 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
                 if args.incremental and md_path.exists():
                     skipped += 1
                 else:
+                    emit(
+                        args,
+                        f"开始导出为知笔记：{doc.title}",
+                        event="document.export.started",
+                        doc={"id": doc.doc_guid, "title": doc.title, "index": index, "path": str(md_path)},
+                    )
                     count, img_failures = export_doc(cdp, snapshot, doc, md_path, args)
                     image_success += count
                     image_failures.extend({"docGuid": doc.doc_guid, "title": doc.title, **item} for item in img_failures)
+                    for failure in img_failures:
+                        emit(
+                            args,
+                            f"为知笔记图片下载失败：{doc.title}：{failure.get('error') or failure.get('url') or ''}",
+                            event="resource.download.failed",
+                            level="error",
+                            doc={"id": doc.doc_guid, "title": doc.title, "index": index, "path": str(md_path)},
+                            resource={"type": "image", "url": failure.get("url", "")},
+                            error={"message": failure.get("error", "")},
+                        )
                     exported += 1
+                    emit(
+                        args,
+                        f"为知笔记导出完成：{doc.title}",
+                        event="document.export.completed",
+                        doc={"id": doc.doc_guid, "title": doc.title, "index": index, "path": str(md_path)},
+                        stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_failures)},
+                    )
             except ExportStopped:
                 raise
             except Exception as exc:  # noqa: BLE001 - keep exporting other docs.
                 failures.append({"docGuid": doc.doc_guid, "title": doc.title, "error": str(exc)})
+                emit(
+                    args,
+                    f"为知笔记导出失败：{doc.title}：{exc}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": doc.doc_guid, "title": doc.title, "index": index, "path": str(md_path)},
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
             if index % max(1, args.progress_every) == 0 or index == total:
-                emit(args, f"progress {index}/{total} exported={exported} skipped={skipped} image_success={image_success} failures={len(failures)}")
+                emit(
+                    args,
+                    f"progress {index}/{total} exported={exported} skipped={skipped} image_success={image_success} failures={len(failures)}",
+                    event="task.progress",
+                    progress={"current": index, "total": total},
+                    stats={
+                        "exportedDocs": exported,
+                        "skippedDocs": skipped,
+                        "imageSuccess": image_success,
+                        "failureCount": len(failures),
+                        "imageFailureCount": len(image_failures),
+                    },
+                )
 
         write_index(output, docs, doc_paths)
         report = {
@@ -995,7 +1045,22 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
             "failures": failures,
             "elapsedSeconds": round(time.time() - started, 2),
         }
-        (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path = output / "00-导出报告.json"
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        emit(
+            args,
+            "为知笔记导出完成" if not failures else f"为知笔记导出完成，但有 {len(failures)} 个失败项",
+            event="task.completed",
+            level="success" if not failures else "warn",
+            reportFile=str(report_path),
+            stats={
+                "exportedDocs": exported,
+                "skippedDocs": skipped,
+                "imageSuccess": image_success,
+                "failureCount": len(failures),
+                "imageFailureCount": len(image_failures),
+            },
+        )
         return report
     finally:
         cdp.close()
@@ -1041,21 +1106,36 @@ def main(argv: list[str] | None = None) -> int:
     try:
         load_doc_id_file(args)
         if args.login:
-            emit(args, json.dumps(run_login(args), ensure_ascii=False))
+            print(json.dumps(run_login(args), ensure_ascii=False, indent=2))
             return 0
         if args.scan_toc:
-            emit(args, json.dumps(scan_wiz(args), ensure_ascii=False))
+            print(json.dumps(scan_wiz(args), ensure_ascii=False, indent=2))
             return 0
         result = export_wiz(args)
-        emit(args, json.dumps(result, ensure_ascii=False))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if not result.get("failures") else 1
     except ExportStopped as exc:
+        emit(args, f"为知笔记导出已停止：{exc}", event="task.stopped", level="warn")
         print(str(exc), file=sys.stderr, flush=True)
         return 130
     except ExportError as exc:
+        emit(
+            args,
+            f"为知笔记导出失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(str(exc), file=sys.stderr, flush=True)
         return 1
     except Exception as exc:  # noqa: BLE001
+        emit(
+            args,
+            f"为知笔记导出失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"为知笔记导出失败：{exc}", file=sys.stderr, flush=True)
         return 1
 

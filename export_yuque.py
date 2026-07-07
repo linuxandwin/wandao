@@ -726,11 +726,19 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         failures: list[dict[str, str]] = []
         resource_failures: list[dict[str, Any]] = []
         stopped = False
+        emit(
+            args,
+            f"开始导出语雀知识库：共 {len(docs)} 篇。",
+            event="task.started",
+            totals={"documents": len(docs), "nodes": len(toc)},
+            output=str(output),
+            target={"namespace": namespace, "bookSlug": book_slug},
+        )
 
         for index, doc in enumerate(docs, start=1):
             if stop_requested(args):
                 stopped = True
-                emit(args, "收到停止请求，正在结束并写入已完成的导出结果。")
+                emit(args, "收到停止请求，正在结束并写入已完成的导出结果。", event="task.stopped", level="warn")
                 break
             key = str(doc.get("doc_id") or doc["uuid"])
             md_path = doc_paths[key]
@@ -738,6 +746,12 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 skipped += 1
                 continue
             try:
+                emit(
+                    args,
+                    f"开始导出语雀文档：{doc.get('title') or key}",
+                    event="document.export.started",
+                    doc={"id": key, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                )
                 result = fetch_doc_markdown(cdp, int(book["id"]), doc, args)
                 markdown = result.get("markdown") or f"# {doc.get('title') or '未命名'}\n"
                 source_url = f"{book_url.rstrip('/')}/{doc.get('url')}"
@@ -761,21 +775,59 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 attachment_success += resource_counts.get("attachment", 0)
                 if resource_errors:
                     resource_failures.append({"document": doc.get("title"), "path": str(md_path), "failures": resource_errors})
+                    for failure in resource_errors:
+                        emit(
+                            args,
+                            f"语雀资源下载失败：{doc.get('title') or key}：{failure.get('error') or failure.get('url') or ''}",
+                            event="resource.download.failed",
+                            level="error",
+                            doc={"id": key, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                            resource={"type": failure.get("kind") or "resource", "url": failure.get("url", "")},
+                            error={"message": failure.get("error", "")},
+                        )
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
                 exported += 1
+                emit(
+                    args,
+                    f"语雀文档导出完成：{doc.get('title') or key}",
+                    event="document.export.completed",
+                    doc={"id": key, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                    stats={
+                        "imageSuccessInDoc": resource_counts.get("image", 0),
+                        "attachmentSuccessInDoc": resource_counts.get("attachment", 0),
+                        "resourceFailuresInDoc": len(resource_errors),
+                    },
+                )
             except ExportStopped:
                 stopped = True
-                emit(args, "收到停止请求，当前文档未写入，正在结束。")
+                emit(args, "收到停止请求，当前文档未写入，正在结束。", event="task.stopped", level="warn")
                 break
             except Exception as exc:
                 failures.append({"title": doc.get("title") or "", "slug": doc.get("url") or "", "error": str(exc)})
+                emit(
+                    args,
+                    f"语雀文档导出失败：{doc.get('title') or key}：{exc}",
+                    event="document.export.failed",
+                    level="error",
+                    doc={"id": key, "title": doc.get("title") or "", "index": index, "path": str(md_path)},
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
 
             if index % args.progress_every == 0 or index == len(docs):
                 emit(
                     args,
                     f"progress {index}/{len(docs)} exported={exported} skipped={skipped} "
                     f"image_success={image_success} attachment_success={attachment_success} failures={len(failures)}",
+                    event="task.progress",
+                    progress={"current": index, "total": len(docs)},
+                    stats={
+                        "exportedDocs": exported,
+                        "skippedDocs": skipped,
+                        "imageSuccess": image_success,
+                        "attachmentSuccess": attachment_success,
+                        "failureCount": len(failures),
+                    },
                 )
 
         write_index(output, book, toc, doc_paths, selected_doc_ids or None)
@@ -811,7 +863,24 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
-        (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path = output / "00-导出报告.json"
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        emit(
+            args,
+            "语雀导出完成" if not stopped else "语雀导出已停止",
+            event="task.completed" if not stopped else "task.stopped",
+            level="success" if not stopped and not failures else "warn",
+            reportFile=str(report_path),
+            stats={
+                "exportedDocs": exported,
+                "skippedDocs": skipped,
+                "imageSuccess": image_success,
+                "attachmentSuccess": attachment_success,
+                "failureCount": len(failures),
+                "imageFailureCount": report.get("imageFailureCount", 0),
+                "attachmentFailureCount": report.get("attachmentFailureCount", 0),
+            },
+        )
         return report
     finally:
         cdp.close()
@@ -1307,9 +1376,17 @@ def main(argv: list[str]) -> int:
                 raise ExportError("--output is required unless --login is used")
             report = export_book(args)
     except KeyboardInterrupt:
+        emit(args, "语雀导出已停止。", event="task.stopped", level="warn")
         print("Interrupted.", file=sys.stderr)
         return 130
     except Exception as exc:
+        emit(
+            args,
+            f"语雀导出任务失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Export failed: {exc}", file=sys.stderr)
         return 1
     if args.scan_toc:

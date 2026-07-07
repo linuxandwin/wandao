@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from wandao_logging import emit_legacy
+
 from export_aliyun_thoughts import (
     CDPClient,
     DEFAULT_PORT,
@@ -120,8 +122,8 @@ class DownloadedContent:
     final_url: str
 
 
-def emit(message: str) -> None:
-    print(message, flush=True)
+def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
+    emit_legacy("youdao-export", message, event=event, level=level, **fields)
 
 
 def default_auth_path() -> Path:
@@ -919,8 +921,15 @@ def localize_links(client: YoudaoClient, markdown: str, md_path: Path, args: arg
             stats["attachmentSuccess"] += 1
             label = alt or Path(urllib.parse.unquote(local)).name or "附件"
             return f"[{label}]({local})"
-        except Exception:
+        except Exception as exc:
             stats["imageFailureCount"] += 1
+            emit(
+                f"有道云图片下载失败：{url}：{exc}",
+                event="resource.download.failed",
+                level="error",
+                resource={"type": "image", "url": url, "host": urllib.parse.urlparse(url).netloc},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
             return match.group(0) if args.keep_remote_images else f"![{alt}]()"
 
     def attachment_replacer(match: re.Match[str]) -> str:
@@ -929,8 +938,15 @@ def localize_links(client: YoudaoClient, markdown: str, md_path: Path, args: arg
             local, _ = download_resource(client, html.unescape(url), md_path, label or "", False, args.download_timeout)
             stats["attachmentSuccess"] += 1
             return f"[{label}]({local})"
-        except Exception:
+        except Exception as exc:
             stats["attachmentFailureCount"] += 1
+            emit(
+                f"有道云附件下载失败：{url}：{exc}",
+                event="resource.download.failed",
+                level="error",
+                resource={"type": "attachment", "url": url, "host": urllib.parse.urlparse(url).netloc},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
             return match.group(0)
 
     markdown = IMAGE_LINK_RE.sub(image_replacer, markdown)
@@ -1000,11 +1016,28 @@ def write_index(output: Path, exported_rows: list[dict[str, Any]]) -> None:
     (output / "00-有道云笔记入口.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def emit_progress(index: int, total: int, exported: int, skipped: int, failures: int) -> None:
+def emit_progress(
+    index: int,
+    total: int,
+    exported: int,
+    skipped: int,
+    failures: int,
+    resource_stats: dict[str, int] | None = None,
+) -> None:
+    stats = {
+        "exportedDocs": exported,
+        "skippedDocs": skipped,
+        "failureCount": failures,
+    }
+    if resource_stats:
+        stats.update(resource_stats)
     emit(
         "progress "
         f"done={index} queued={max(0, total - index)} exported={exported} "
-        f"skipped={skipped} failures={failures}"
+        f"skipped={skipped} failures={failures}",
+        event="task.progress",
+        progress={"current": index, "total": total},
+        stats=stats,
     )
 
 
@@ -1032,6 +1065,12 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         "attachmentSuccess": 0,
         "attachmentFailureCount": 0,
     }
+    emit(
+        f"开始导出有道云笔记：共 {total} 篇。",
+        event="task.started",
+        totals={"documents": total, "nodes": len(nodes)},
+        output=str(output),
+    )
 
     for index, node in enumerate(docs, start=1):
         md_or_file_path = local_paths[node.id]
@@ -1046,9 +1085,14 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                         "level": len(node.path_parts),
                     }
                 )
-                emit_progress(index, total, exported, skipped, len(failures))
+                emit_progress(index, total, exported, skipped, len(failures), stats)
                 continue
 
+            emit(
+                f"开始导出有道云笔记：{node.title}",
+                event="document.export.started",
+                doc={"id": node.id, "title": node.title, "index": index, "path": "/".join(node.path_parts)},
+            )
             downloaded = client.download_file(node.id)
             markdown, is_markdown = convert_note_to_markdown(node, downloaded)
             if is_markdown:
@@ -1074,10 +1118,22 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                     "level": len(node.path_parts),
                 }
             )
+            emit(
+                f"有道云笔记导出完成：{node.title}",
+                event="document.export.completed",
+                doc={"id": node.id, "title": node.title, "index": index, "path": str(row_file)},
+            )
         except Exception as exc:
             failures.append({"id": node.id, "title": node.title, "path": "/".join(node.path_parts), "error": str(exc)})
+            emit(
+                f"有道云笔记导出失败：{node.title}：{exc}",
+                event="document.export.failed",
+                level="error",
+                doc={"id": node.id, "title": node.title, "index": index, "path": "/".join(node.path_parts)},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
         if index % max(1, args.progress_every) == 0 or index == total:
-            emit_progress(index, total, exported, skipped, len(failures))
+            emit_progress(index, total, exported, skipped, len(failures), stats)
 
     write_index(output, rows)
     report = {
@@ -1092,7 +1148,15 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         "requestCount": client.request_count,
         **stats,
     }
-    (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path = output / "00-导出报告.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    emit(
+        "有道云笔记导出完成" if not failures else f"有道云笔记导出完成，但有 {len(failures)} 个失败项",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        reportFile=str(report_path),
+        stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures), **stats},
+    )
     return report
 
 
@@ -1196,12 +1260,25 @@ def main(argv: list[str]) -> int:
                 raise YoudaoError("--output is required unless --login or --scan-toc is used")
             result = export_youdao(args)
     except KeyboardInterrupt:
+        emit("有道云笔记导出已停止。", event="task.stopped", level="warn")
         print("Interrupted.", file=sys.stderr)
         return 130
     except (YoudaoError, ExportError) as exc:
+        emit(
+            f"有道云笔记导出失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Export failed: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
+        emit(
+            f"有道云笔记导出失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Export failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))

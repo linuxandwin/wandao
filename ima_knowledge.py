@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from wandao_logging import emit_legacy
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://ima.qq.com"
@@ -150,8 +152,8 @@ class KnowledgeEntry:
         return f"{self.kb_id}{DOC_ID_SEPARATOR}{self.media_id}"
 
 
-def emit(message: str) -> None:
-    print(message, flush=True)
+def emit(message: str, *, event: str = "log.message", level: str = "info", **fields: Any) -> None:
+    emit_legacy("ima", message, event=event, level=level, **fields)
 
 
 def emit_json(data: dict[str, Any]) -> None:
@@ -587,22 +589,57 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
     skipped = 0
     failures: list[dict[str, str]] = []
     started = time.time()
+    emit(
+        f"开始导出 ima 知识库内容：共 {total} 个文件。",
+        event="task.started",
+        totals={"documents": total, "knowledgeBases": len(kbs)},
+        output=str(output),
+    )
     for index, entry in enumerate(docs, 1):
         check_stopped(args)
         try:
+            emit(
+                f"开始导出 ima 文件：{entry.title}",
+                event="document.export.started",
+                doc={"id": entry.export_id, "title": entry.title, "index": index},
+            )
             status, path, reason = save_media_entry(client, entry, output)
             if status.startswith("exported"):
                 exported += 1
+                emit(
+                    f"ima 文件导出完成：{entry.title}",
+                    event="document.export.completed",
+                    doc={"id": entry.export_id, "title": entry.title, "index": index, "path": str(path)},
+                )
             else:
                 skipped += 1
                 if reason:
                     failures.append({"title": entry.title, "reason": reason})
+                    emit(
+                        f"ima 文件跳过：{entry.title}：{reason}",
+                        event="document.export.failed",
+                        level="warn",
+                        doc={"id": entry.export_id, "title": entry.title, "index": index},
+                        error={"message": reason},
+                    )
         except Exception as exc:
             skipped += 1
             failures.append({"title": entry.title, "reason": str(exc)})
+            emit(
+                f"ima 文件导出失败：{entry.title}：{exc}",
+                event="document.export.failed",
+                level="error",
+                doc={"id": entry.export_id, "title": entry.title, "index": index},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
         if args.progress_every and (index % args.progress_every == 0 or index == total):
-            emit(f"progress {index}/{total} exported={exported} skipped={skipped} failures={len(failures)}")
-    return {
+            emit(
+                f"progress {index}/{total} exported={exported} skipped={skipped} failures={len(failures)}",
+                event="task.progress",
+                progress={"current": index, "total": total},
+                stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
+            )
+    report = {
         "provider": "ima",
         "mode": "export",
         "knowledgeBaseCount": len(kbs),
@@ -615,6 +652,13 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
         "elapsedSeconds": round(time.time() - started, 1),
         "requestCount": int(getattr(args, "_request_count", 0) or 0),
     }
+    emit(
+        "ima 导出完成" if not failures else f"ima 导出完成，但有 {len(failures)} 个失败项",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures)},
+    )
+    return report
 
 
 def file_media_info(path: Path) -> tuple[int, str]:
@@ -908,19 +952,50 @@ def import_files(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
     failures: list[dict[str, str]] = []
     started = time.time()
     total = len(files)
+    emit(
+        f"开始导入 ima 知识库文件：共 {total} 个文件。",
+        event="task.started",
+        totals={"documents": total},
+        sourceDir=str(source_dir),
+        target={"knowledgeBaseId": args.knowledge_base_id, "folderId": args.folder_id or ""},
+    )
     for index, path in enumerate(files, 1):
         check_stopped(args)
         try:
+            relative_path = path.relative_to(source_dir).as_posix() if path.is_relative_to(source_dir) else str(path)
+            emit(
+                f"开始上传 ima 文件：{relative_path}",
+                event="document.import.started",
+                doc={"path": relative_path, "index": index},
+            )
             result = upload_file(client, args, path)
             if result == "skipped_existing":
                 skipped += 1
             else:
                 imported += 1
+            emit(
+                f"ima 文件处理完成：{relative_path}",
+                event="document.import.completed",
+                doc={"path": relative_path, "index": index},
+                result={"status": result},
+            )
         except Exception as exc:
             failures.append({"relativePath": path.relative_to(source_dir).as_posix() if path.is_relative_to(source_dir) else str(path), "error": str(exc)})
+            emit(
+                f"ima 文件导入失败：{path.name}：{exc}",
+                event="document.import.failed",
+                level="error",
+                doc={"path": str(path), "index": index},
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
         if args.progress_every and (index % args.progress_every == 0 or index == total):
-            emit(f"progress {index}/{total} imported={imported} skipped={skipped} failures={len(failures)}")
-    return {
+            emit(
+                f"progress {index}/{total} imported={imported} skipped={skipped} failures={len(failures)}",
+                event="task.progress",
+                progress={"current": index, "total": total},
+                stats={"importedDocs": imported, "skippedDocs": skipped, "failureCount": len(failures)},
+            )
+    report = {
         "provider": "ima",
         "mode": "import",
         "sourceDir": str(source_dir),
@@ -934,6 +1009,13 @@ def import_files(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
         "elapsedSeconds": round(time.time() - started, 1),
         "requestCount": int(getattr(args, "_request_count", 0) or 0),
     }
+    emit(
+        "ima 导入完成" if not failures else f"ima 导入完成，但有 {len(failures)} 个失败项",
+        event="task.completed",
+        level="success" if not failures else "warn",
+        stats={"importedDocs": imported, "skippedDocs": skipped, "failureCount": len(failures)},
+    )
+    return report
 
 
 def list_knowledge_bases(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
@@ -1000,9 +1082,16 @@ def main(argv: list[str]) -> int:
             emit_json(export_selected(client, args))
         return 0
     except ImaStopped as exc:
+        emit(str(exc), event="task.stopped", level="warn")
         emit_json({"provider": "ima", "stopped": True, "error": str(exc)})
         return 130
     except Exception as exc:
+        emit(
+            str(exc),
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(str(exc), file=sys.stderr, flush=True)
         return 1
 
