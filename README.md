@@ -42,6 +42,7 @@ Author: `tllovesxs`
 | 📦 发行版下载 | [GitHub Releases](https://github.com/tllovesxs/wandao/releases) |
 | 🐛 问题反馈 | [GitHub Issues](https://github.com/tllovesxs/wandao/issues) / [Gitee Issues](https://gitee.com/shi-xiansong/wandao/issues) |
 | 📖 使用教程 | [docs/使用教程.md](docs/使用教程.md) |
+| 🤝 共创流程 | [docs/共创流程.md](docs/共创流程.md) |
 | 🔌 Provider 接入 | [docs/Provider接入说明.md](docs/Provider接入说明.md) |
 | 🧩 插件开发 | [docs/插件开发指南.md](docs/插件开发指南.md) |
 | 🧠 项目学习提示词 | [prompts/项目学习导师提示词.md](prompts/项目学习导师提示词.md) |
@@ -242,7 +243,9 @@ npm run build:mac:arm64
 
 欢迎提交 Issue 和 Pull Request。Bug 反馈、平台适配、导入导出效果优化、文档补充和界面体验改进都可以参与。
 
-提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。请不要在 Issue、PR、截图或日志里提交 Cookie、账号密码、App Secret、Token、API Key 等敏感信息。
+为了避免重复开发，新平台、大功能、复杂 Bug 请先搜索已有 Issue/PR，再提交 Issue 并认领。认领后建议 7 天内提交 Draft PR 或同步进展。
+
+提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [docs/共创流程.md](docs/共创流程.md)。请不要在 Issue、PR、截图或日志里提交 Cookie、账号密码、App Secret、Token、API Key 等敏感信息。
 
 ## 🔗 友情链接
 

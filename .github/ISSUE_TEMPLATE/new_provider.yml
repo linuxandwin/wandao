@@ -1,0 +1,116 @@
+name: 新平台共创 / 认领
+description: 新增某个平台的导入、导出或教程能力
+title: "[Provider] "
+labels: ["enhancement", "help wanted", "provider", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个模板用于新增平台、认领平台适配、提交平台调研。
+
+        请先搜索已有 Issue 和 PR，避免多人重复做同一个平台。认领后建议 7 天内提交 Draft PR 或同步进展。
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过已有 Issue 和 PR，没有找到相同平台或相同方向的适配。
+          required: true
+        - label: 我理解新增平台、大功能需要先提 Issue 并认领，再开始开发。
+          required: true
+        - label: 我不会提交 Cookie、Token、账号密码、App Secret、API Key 或私人知识库内容。
+          required: true
+  - type: input
+    id: platform
+    attributes:
+      label: 平台名称
+      placeholder: 例如：飞书 / 语雀 / 某某知识库
+    validations:
+      required: true
+  - type: input
+    id: platform_url
+    attributes:
+      label: 平台官网或入口示例
+      description: 优先提供公开官网、帮助文档或公开样例链接，不要提供私人内容链接。
+      placeholder: https://example.com
+  - type: checkboxes
+    id: capability
+    attributes:
+      label: 希望共创的能力
+      options:
+        - label: 导出为 Markdown
+        - label: 导入 Markdown
+        - label: 图片处理
+        - label: 附件处理
+        - label: 读取目录 / 保留目录结构
+        - label: 断点续跑 / 失败重试
+        - label: 教程文档
+        - label: 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: contribution_type
+    attributes:
+      label: 你计划贡献什么
+      options:
+        - 我想认领开发这个平台
+        - 我先提供平台调研和样例
+        - 我只想提出需求，暂不开发
+        - 我可以协助测试
+        - 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: provider_type
+    attributes:
+      label: 预计接入方式
+      description: 不确定可以选“不确定”。
+      options:
+        - 标准 UI Provider
+        - 复杂流程 Provider
+        - 教程型 Provider
+        - 可能需要内置专属 UI
+        - 不确定
+  - type: textarea
+    id: current_workflow
+    attributes:
+      label: 当前平台的导入/导出方式
+      description: 平台本身是否支持导出？支持哪些格式？有没有官方 API？是否必须浏览器登录？
+      placeholder: |
+        例如：
+        - 平台官方支持导出 HTML/PDF，但不支持 Markdown。
+        - 网页端可以看到目录树。
+        - 图片需要单独下载。
+    validations:
+      required: true
+  - type: textarea
+    id: expected_output
+    attributes:
+      label: 期望效果
+      description: 描述导入/导出后希望得到什么结构。
+      placeholder: |
+        例如：
+        - 保留多层目录结构。
+        - 每篇文档一个 .md。
+        - 图片保存到 assets 目录，并替换为相对路径。
+    validations:
+      required: true
+  - type: textarea
+    id: test_material
+    attributes:
+      label: 可用于测试的材料
+      description: 可以说明是否有脱敏样例、公开页面、测试账号或可截图的目录结构。请不要直接贴敏感数据。
+  - type: textarea
+    id: references
+    attributes:
+      label: 参考资料或开源项目
+      description: 如果参考第三方项目，请写清楚链接和许可证。
+  - type: input
+    id: eta
+    attributes:
+      label: 如果认领，预计多久提交 Draft PR
+      placeholder: 例如：3 天 / 1 周 / 不确定
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他补充
