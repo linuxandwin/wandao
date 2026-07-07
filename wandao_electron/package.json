@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -107,6 +107,10 @@
       {
         "from": "../gui_utils.py",
         "to": "python/gui_utils.py"
+      },
+      {
+        "from": "../wandao_logging.py",
+        "to": "python/wandao_logging.py"
       },
       {
         "from": "../requirements.txt",
