@@ -57,6 +57,7 @@ from export_aliyun_thoughts import (
     stop_requested,
     wait_for_debug_port,
 )
+from wandao_report import finalize_report
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -2080,7 +2081,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         while queue_links:
             if stop_requested(args):
                 stopped = True
-                emit(args, "收到停止请求，正在结束并写入已完成的导出结果。")
+                emit(args, "收到停止请求，正在结束并写入已完成的导出结果。", event="task.stopped", level="warn")
                 break
             link, depth = queue_links.pop(0)
             href = link.get("href") or link.get("key") or ""
@@ -2266,7 +2267,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         local_link_rewrite_count = rewrite_local_zsxq_links(output)
         report = {
             "provider": "zsxq",
-            "mode": "incremental" if args.incremental else "full",
+            "exportMode": "incremental" if args.incremental else "full",
             "entryUrl": entry_url,
             "output": str(output),
             "sourceMode": "toc" if use_toc else "links",
@@ -2299,7 +2300,24 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "imageFailures": image_failures,
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
-        (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path = output / "00-导出报告.json"
+        report = finalize_report(report, provider="zsxq", mode="export", report_file=report_path, output=output)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        emit(
+            args,
+            "知识星球导出完成" if not stopped else "知识星球导出已停止",
+            event="task.completed" if not stopped else "task.stopped",
+            level="success" if not stopped and not failures else "warn",
+            reportFile=str(report_path),
+            stats={
+                "exportedDocs": exported,
+                "skippedDocs": skipped,
+                "failureCount": len(failures),
+                "imageSuccess": image_success,
+                "imageFailureCount": report.get("imageFailureCount", 0),
+                "rateLimitEvents": report.get("rateLimitEvents", 0),
+            },
+        )
         return report
     finally:
         cdp.close()
@@ -2850,9 +2868,17 @@ def main(argv: list[str]) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except ExportStopped as exc:
+        emit(args, f"知识星球导出已停止：{exc}", event="task.stopped", level="warn")
         print(f"Stopped: {exc}", file=sys.stderr)
         return 130
     except Exception as exc:
+        emit(
+            args,
+            f"知识星球导出任务失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

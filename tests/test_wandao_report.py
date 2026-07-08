@@ -1,0 +1,63 @@
+import unittest
+
+from wandao_report import finalize_report
+
+
+class WandaoReportTests(unittest.TestCase):
+    def test_finalize_export_report_adds_common_fields(self) -> None:
+        report = finalize_report(
+            {
+                "platform": "wiz",
+                "total": 3,
+                "exported": 2,
+                "failures": [{"title": "broken", "error": "timeout"}],
+            },
+            mode="export",
+            report_file="00-导出报告.json",
+            output="exports/wiz",
+        )
+
+        self.assertEqual(report["reportSchemaVersion"], 1)
+        self.assertEqual(report["provider"], "wiz")
+        self.assertEqual(report["mode"], "export")
+        self.assertEqual(report["totalDocs"], 3)
+        self.assertEqual(report["successCount"], 2)
+        self.assertEqual(report["failureCount"], 1)
+        self.assertEqual(report["reportFile"], "00-导出报告.json")
+        self.assertEqual(report["output"], "exports/wiz")
+
+    def test_finalize_import_report_combines_created_and_updated(self) -> None:
+        report = finalize_report(
+            {
+                "provider": "yuque-import",
+                "totalDocs": 5,
+                "createdDocs": 2,
+                "updatedDocs": 1,
+                "skippedDocs": 1,
+                "imageFailures": [{"document": "a", "failures": [{"url": "x"}]}],
+            },
+            mode="import",
+        )
+
+        self.assertEqual(report["successCount"], 3)
+        self.assertEqual(report["failureCount"], 0)
+        self.assertEqual(report["resourceFailures"][0]["type"], "image")
+
+    def test_finalize_legacy_import_count_fields(self) -> None:
+        report = finalize_report(
+            {
+                "provider": "yinxiang-import",
+                "sourceDocCount": 4,
+                "importedCount": 3,
+                "failures": [{"path": "broken.md", "error": "timeout"}],
+            },
+            mode="import",
+        )
+
+        self.assertEqual(report["totalDocs"], 4)
+        self.assertEqual(report["successCount"], 3)
+        self.assertEqual(report["failureCount"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

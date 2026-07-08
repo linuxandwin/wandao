@@ -158,14 +158,16 @@ npm start
 
 ## 推荐检查
 
-提交 PR 前建议至少运行：
+提交 PR 前建议优先运行统一质量检查：
 
 ```powershell
-python -m py_compile export_zsxq.py export_yuque.py export_feishu.py export_aliyun_thoughts.py export_yinxiang.py export_youdao.py export_wiz.py import_feishu.py import_yuque.py import_yinxiang.py
-node --check wandao_electron\main.js
-node --check wandao_electron\preload.js
-node --check wandao_electron\renderer\app.js
-git diff --check
+python scripts\quality_check.py
+```
+
+这会检查 Provider 配置、Python 语法、单元测试和 Electron JS 语法。只改 Provider 配置或公告索引时，也可以单独运行：
+
+```powershell
+python scripts\validate_providers.py
 ```
 
 如果只改文档，可以在 PR 中说明没有运行代码检查。
@@ -183,6 +185,7 @@ git diff --check
 - 已说明真实导入/导出测试结果，或说明暂时无法测试的原因。
 - 如果参考第三方项目，已说明来源和许可证。
 - 未把尚未实现的能力写成已支持。
+- 已通过 `python scripts\validate_providers.py`。
 
 ## 敏感信息和合规要求
 

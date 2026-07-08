@@ -19,6 +19,10 @@ from typing import Any
 LOG_PREFIX = "@@WANDAO_LOG@@"
 SENSITIVE_KEYS = re.compile(r"(cookie|token|secret|password|authorization|signature|access[_-]?key|api[_-]?key)", re.I)
 SIGNATURE_QUERY_RE = re.compile(r"([?&](?:Signature|signature|token|access_token|Authorization)=)[^&\s)]+")
+SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"\b(cookie|token|secret|password|authorization|signature|access[_-]?key|api[_-]?key)\s*([:=])\s*[^\s,&;)]+",
+    re.I,
+)
 
 
 def structured_logs_enabled() -> bool:
@@ -47,6 +51,7 @@ def mask_sensitive(value: Any) -> Any:
     if isinstance(value, str):
         text = SIGNATURE_QUERY_RE.sub(r"\1***", value)
         text = re.sub(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1***", text, flags=re.I)
+        text = SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}***", text)
         return text
     return value
 

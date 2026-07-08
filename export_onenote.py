@@ -31,6 +31,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from wandao_logging import emit_legacy
+from wandao_report import finalize_report
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -905,6 +906,7 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         "keptMht": str(mht_root) if args.keep_mht else "",
     }
     report_path = output / "00-导出报告.json"
+    report = finalize_report(report, provider="onenote", mode="export", report_file=report_path, output=output)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     emit(
         "OneNote 导出完成" if not failures else f"OneNote 导出完成，但有 {len(failures)} 个失败项",

@@ -10,13 +10,35 @@
 ```text
 docs/共创流程.md
 docs/插件开发指南.md
+providers/provider.schema.json
 ```
+
+## Provider v1 稳定契约
+
+从当前版本开始，文件型 Provider 使用 `schemaVersion: 1`，也就是 Provider v1 契约。贡献者按 v1 编写的 provider，后续小版本会保持向后兼容。
+
+稳定承诺：
+
+- `provider.json` 的核心字段、字段类型、动作协议、目录树协议、日志协议和最终报告字段保持兼容。
+- 新增能力优先增加可选字段，不删除或改变已有字段含义。
+- 主程序会忽略未知扩展字段，方便社区先声明平台特有信息。
+- 如果未来必须做破坏性调整，会新增 `schemaVersion: 2`，不会让 v1 provider 静默失效。
+- 贡献者不需要修改 Electron 主程序，也不需要注入前端代码，就可以接入大多数新平台。
+
+机器可读 Schema 位于：
+
+```text
+providers/provider.schema.json
+```
+
+模板里的 `"$schema": "../provider.schema.json"` 可以让编辑器更容易提示字段，也方便维护者检查协议是否漂移。
 
 ## 目录约定
 
 ```text
 providers/
   _template_standard/
+  _template_import/
   _template_custom/
   _demo_local_export/
   notion/
@@ -54,6 +76,7 @@ providers/your-provider/
 - `status`：标记 experimental、beta、stable。
 - `requirements`：声明 Python、系统和使用依赖。
 - `capabilities`：声明导出、导入、教程、图片、附件、目录树、批量、重试等能力。
+- `retryFailures`：当 `capabilities.retryFailures` 为 `true` 时，声明“只重试失败项”的脚本参数，例如 `{ "arg": "--retry-failures" }`。
 - `toc`：声明通用目录树字段映射，支持读取目录后勾选。
 - `actions.updates`：动作完成后把结果回填到输入框或下拉框。
 
@@ -64,8 +87,19 @@ providers/your-provider/
 1. 先搜索已有 Issue/PR，避免重复共创。
 2. 没有重复时，使用“新平台共创/认领”Issue 模板提交需求或认领。
 3. 平台本身有导出导入能力：先做教程型 provider。
-4. 平台流程比较标准：用 `_template_standard`。
-5. 平台流程很复杂：用 `_template_custom` 提交核心脚本和流程说明。
-6. 标准 UI 不够：在 PR 中说明需要的专属 UI，不要直接把复杂逻辑散落到主程序里。
+4. 标准导出平台：用 `_template_standard`。
+5. 标准导入平台：用 `_template_import`。
+6. 平台流程很复杂：用 `_template_custom` 提交核心脚本和流程说明。
+7. 标准 UI 不够：在 PR 中说明需要的专属 UI，不要直接把复杂逻辑散落到主程序里。
 
 这样平台能力会集中在自己的目录中，后续维护、审查、回滚和共创都会更清楚。
+
+## 提交前校验
+
+新增或修改文件型 provider 后，请在项目根目录运行：
+
+```powershell
+python scripts\validate_providers.py
+```
+
+这个校验会检查 `provider.json`、脚本路径、教程路径、字段、动作、目录树协议和公告索引。它只约束安全边界和基本结构，不会限制平台必须使用固定流程。

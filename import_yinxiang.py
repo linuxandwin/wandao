@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from wandao_logging import emit_legacy
+from wandao_report import finalize_report
 
 
 class ImportErrorForUser(RuntimeError):
@@ -471,10 +472,13 @@ def import_one(args: argparse.Namespace) -> dict[str, Any]:
     created = import_markdown_file(args, store, md_path)
     report = {
         "provider": "yinxiang-import",
-        "mode": "one",
+        "importMode": "one",
+        "totalDocs": 1,
+        "importedDocs": 1,
         "importedCount": 1,
         "imported": [created],
     }
+    report = finalize_report(report, provider="yinxiang-import", mode="import", output=md_path)
     emit(
         f"印象笔记文档导入完成：{created.get('title') or md_path.name}",
         event="document.import.completed",
@@ -543,14 +547,17 @@ def import_all(args: argparse.Namespace) -> dict[str, Any]:
 
     report = {
         "provider": "yinxiang-import",
-        "mode": "all",
+        "importMode": "all",
         "sourceDir": str(args.source_dir.resolve()),
         "sourceDocCount": total,
+        "totalDocs": total,
+        "importedDocs": len(imported),
         "importedCount": len(imported),
         "failureCount": len(failures),
         "imported": imported,
         "failures": failures,
     }
+    report = finalize_report(report, provider="yinxiang-import", mode="import", output=args.source_dir.resolve())
     emit(
         "印象笔记 Markdown 导入完成" if not failures else f"印象笔记 Markdown 导入完成，但有 {len(failures)} 个失败项",
         event="task.completed",

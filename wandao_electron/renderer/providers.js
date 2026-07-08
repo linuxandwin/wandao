@@ -30,8 +30,10 @@
         guide: type === 'guide' || type === 'hybrid',
         stop: true,
         report: true,
+        retryFailures: false,
         ...(provider.capabilities || {})
       },
+      retryFailures: provider.retryFailures || {},
       defaults: {
         output: '',
         ...(provider.defaults || {})
@@ -170,7 +172,8 @@
       outputParam: '--source-dir',
       isImport: true,
       defaults: { output: 'exports/yuque' },
-      capabilities: { login: true, scanToc: false }
+      capabilities: { login: true, scanToc: false, retryFailures: true },
+      retryFailures: { arg: '--retry-failures', label: '只重试失败项' }
     },
     {
       id: 'feishu-import',

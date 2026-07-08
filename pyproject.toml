@@ -37,4 +37,5 @@ py-modules = [
   "ima_knowledge",
   "gui_utils",
   "wandao_logging",
+  "wandao_report",
 ]

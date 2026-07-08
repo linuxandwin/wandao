@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from wandao_logging import emit_legacy
+from wandao_report import finalize_report
 
 from export_aliyun_thoughts import (
     CDPClient,
@@ -1149,6 +1150,7 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         **stats,
     }
     report_path = output / "00-导出报告.json"
+    report = finalize_report(report, provider="youdao", mode="export", report_file=report_path, output=output)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     emit(
         "有道云笔记导出完成" if not failures else f"有道云笔记导出完成，但有 {len(failures)} 个失败项",

@@ -25,6 +25,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from wandao_logging import emit_legacy
+from wandao_report import finalize_report
 
 
 class ExportError(RuntimeError):
@@ -582,6 +583,7 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
         "failureCount": len(failures),
         "failures": failures,
     }
+    report = finalize_report(report, provider="yinxiang", mode="export", output=output)
     emit(
         "印象笔记导出完成" if not failures else f"印象笔记导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",

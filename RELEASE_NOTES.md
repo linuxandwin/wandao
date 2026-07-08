@@ -1,4 +1,34 @@
-# Wandao 1.2.0 Release Notes
+# Wandao Release Notes
+
+## 1.2.2
+
+本次版本重点补强稳定性和共创质量底座。
+
+- 新增统一结构化日志模块，桌面端可记录任务、文档、资源和失败事件。
+- 错误报告会自动脱敏常见 Token、Cookie、Signature、Authorization 等敏感字段。
+- 文件型 provider 打包后可稳定引用内置日志模块。
+- 新增 Provider 与教程公告配置校验器：`python scripts/validate_providers.py`。
+- 新增统一质量检查入口：`python scripts/quality_check.py`。
+- CI 新增 Quality Gate，PR、main 分支和 tag 都会先跑质量检查。
+- 精简旧 provider 模板，保留标准模板、复杂模板和本地 Markdown 示例。
+- Provider v1 契约稳定：`schemaVersion: 1` 将作为当前共创插件协议，后续小版本保持向后兼容。
+- 新增 `providers/provider.schema.json`，为 `provider.json` 提供机器可读 Schema 和编辑器提示。
+- 新增标准导入 Provider 模板，演示扫描本地 Markdown、复制资源和生成导入报告。
+- 任务中心新增统一报告归一化层，不同平台的统计和失败项会先收敛为同一套视图。
+- 内置高频平台最终报告接入统一收口，任务中心能更稳定识别总数、成功数、失败数和资源失败。
+- 任务报告 Markdown 生成收敛到 `task_report.js`，复制报告逻辑更容易维护。
+- 任务历史卡片支持失败预览，并可直接打开输出目录或报告文件。
+- 任务历史支持单独复制失败项；不支持重试的平台会给出原因提示。
+- 任务中心支持 Provider 声明式失败重试；语雀导入会优先只重试上次报告中的失败项。
+- Provider 校验器会检查失败重试声明，避免共创插件声明了能力但缺少实际重试参数。
+- 标准导出和标准导入 Provider 模板都已加入烟测，降低社区共创新平台的接入风险。
+- 渲染端结构化日志拆出为独立模块，减少主 UI 文件复杂度。
+- Provider 信任标签和执行确认规则收敛到独立模块，非官方和本地 Provider 执行脚本前会展示提醒并要求确认。
+- 浏览器调试端口不可用时，会提示端口占用、浏览器选择和重试建议。
+- 用户日志/详细日志切换改为限量批量渲染，长任务产生大量日志后切换不再明显卡顿。
+- 本地设置加入 schema 版本，为后续覆盖安装和配置迁移保留兼容入口。
+
+## 1.2.0
 
 本次版本是一次架构升级，重点是让万能导更适合开源共创：新增文件型 provider 插件机制，支持教程型平台、混合型平台和社区自动化脚本。
 
@@ -14,7 +44,7 @@
 - 新增 provider 信任等级：官方、社区、本地、实验等来源会在界面展示。
 - 新增平台中心入口，平台能力按卡片集中展示。
 - 新增 Notion 迁移指南示例 provider。
-- 新增社区插件模板：`providers/_template/`。
+- 新增社区插件模板：`providers/_template_standard/` 和 `providers/_template_custom/`。
 - 新增插件开发文档：`docs/插件开发指南.md`。
 - 应用头部新增万能导 Logo 展示，品牌识别更清晰。
 

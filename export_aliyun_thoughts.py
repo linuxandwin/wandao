@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from wandao_logging import WandaoLogger, print_text, structured_logs_enabled
+from wandao_report import finalize_report
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -317,6 +318,41 @@ def chrome_debug_available(port: int) -> bool:
         return False
 
 
+def debug_port_probe(port: int) -> tuple[str, str]:
+    try:
+        data = http_json(f"http://127.0.0.1:{port}/json/version", timeout=2)
+        if isinstance(data, dict) and (data.get("Browser") or data.get("webSocketDebuggerUrl")):
+            return "available", ""
+        return "occupied", "端口有响应，但不是 Chrome DevTools 调试服务。"
+    except urllib.error.HTTPError as exc:
+        return "occupied", f"端口有 HTTP 响应，但返回 HTTP {exc.code}。"
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, ConnectionRefusedError):
+            return "closed", "端口没有服务监听，浏览器可能没有成功启动。"
+        return "network_error", str(reason)
+    except TimeoutError:
+        return "timeout", "连接端口超时。"
+    except Exception as exc:  # noqa: BLE001 - used only for diagnostics.
+        return "unknown", str(exc)
+
+
+def debug_port_error_message(port: int, status: str, detail: str = "") -> str:
+    suggestions = [
+        f"无法连接浏览器调试端口 {port}。",
+        detail or "浏览器没有在预期时间内开放 DevTools 调试端口。",
+        "处理建议：",
+        "1. 到“设置 > 自动化浏览器”检测并选择 Chrome、Edge 或 Chromium。",
+        f"2. 关闭已经打开的 Chrome/Edge 后重试，避免端口 {port} 被旧浏览器或其他程序占用。",
+        "3. 如果仍失败，重启电脑后再试，并把错误报告发给开发者。",
+    ]
+    if status == "occupied":
+        suggestions.insert(2, "这通常表示端口被其他程序占用，或当前浏览器不是由万能导以调试模式启动。")
+    elif status == "closed":
+        suggestions.insert(2, "这通常表示浏览器启动失败、浏览器路径不正确，或系统拦截了自动化启动。")
+    return "\n".join(suggestions)
+
+
 def find_chrome(explicit_path: str | None = None) -> str | None:
     if explicit_path:
         expanded = str(Path(explicit_path).expanduser())
@@ -394,11 +430,14 @@ def start_chrome(port: int, profile_dir: Path, url: str, browser_path: str | Non
 
 def wait_for_debug_port(port: int, timeout: int = 30) -> None:
     deadline = time.time() + timeout
+    last_status = "unknown"
+    last_detail = ""
     while time.time() < deadline:
-        if chrome_debug_available(port):
+        last_status, last_detail = debug_port_probe(port)
+        if last_status == "available":
             return
         time.sleep(1)
-    raise ExportError(f"Chrome remote debugging port {port} is not available")
+    raise ExportError(debug_port_error_message(port, last_status, last_detail))
 
 
 def page_for_workspace(port: int, workspace_id: str) -> dict[str, Any] | None:
@@ -456,7 +495,8 @@ def compact_error(error: Any, limit: int = 600) -> str:
 def write_json_report(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = finalize_report(data, provider="aliyun-thoughts", mode="export", report_file=path, output=data.get("output"))
+    tmp_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(path)
 
 
@@ -2523,6 +2563,7 @@ def main(argv: list[str]) -> int:
                 raise ExportError("--output is required unless --login is used")
             report = export_workspace(args)
     except KeyboardInterrupt:
+        emit(args, "阿里云 Thoughts 导出已停止。", event="task.stopped", level="warn")
         print("Interrupted.", file=sys.stderr)
         return 130
     except Exception as exc:

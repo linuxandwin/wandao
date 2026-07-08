@@ -53,6 +53,7 @@ from export_yuque import (
     parse_book_url,
     read_auth_cookies,
 )
+from wandao_report import finalize_report
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -266,7 +267,8 @@ def fatal_yuque_error_message(error: Any) -> str:
 def write_json_report(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = finalize_report(data, provider="yuque-import", mode="import", report_file=path, output=data.get("sourceDir"))
+    tmp_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(path)
 
 
@@ -1519,6 +1521,7 @@ def main(argv: list[str]) -> int:
                 args.max_import = 1
             report = import_docs(args)
     except KeyboardInterrupt:
+        emit(args, "语雀导入任务已停止。", event="task.stopped", level="warn")
         return 130
     except Exception as exc:
         emit(

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/providers.js && node --check renderer/provider_runtime.js && node --check renderer/task_report.js && node --check renderer/structured_logs.js && node --check scripts/npm_install_cn.js",
     "install:cn": "node scripts/npm_install_cn.js",
     "prepare:python": "python scripts/prepare_python_runtime.py --target auto",
     "prepare:python:win": "python scripts/prepare_python_runtime.py --target win-x64",
@@ -111,6 +112,10 @@
       {
         "from": "../wandao_logging.py",
         "to": "python/wandao_logging.py"
+      },
+      {
+        "from": "../wandao_report.py",
+        "to": "python/wandao_report.py"
       },
       {
         "from": "../requirements.txt",

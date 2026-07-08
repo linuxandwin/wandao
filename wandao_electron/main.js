@@ -22,6 +22,7 @@ const PROJECT_INFO = {
 
 const APP_ID = 'com.wandao.app';
 const SETTINGS_FILE = 'settings.json';
+const SETTINGS_SCHEMA_VERSION = 1;
 const BROWSER_DOWNLOAD_URL = 'https://www.google.com/chrome/';
 
 function resolveAppAsset(fileName) {
@@ -320,24 +321,33 @@ function appSettingsPath() {
   return path.join(app.getPath('userData'), SETTINGS_FILE);
 }
 
+function normalizeAppSettings(settings) {
+  const next = settings && typeof settings === 'object' ? { ...settings } : {};
+  if (!Number.isInteger(next.schemaVersion) || next.schemaVersion < 1) {
+    next.schemaVersion = SETTINGS_SCHEMA_VERSION;
+  }
+  return next;
+}
+
 function readAppSettings() {
   try {
     const filePath = appSettingsPath();
-    if (!fs.existsSync(filePath)) return {};
+    if (!fs.existsSync(filePath)) return normalizeAppSettings({});
     const settings = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    return settings && typeof settings === 'object' ? settings : {};
+    return normalizeAppSettings(settings);
   } catch (_error) {
-    return {};
+    return normalizeAppSettings({});
   }
 }
 
 function writeAppSettings(settings) {
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
-  fs.writeFileSync(appSettingsPath(), JSON.stringify(settings || {}, null, 2), 'utf-8');
+  fs.writeFileSync(appSettingsPath(), JSON.stringify(normalizeAppSettings(settings), null, 2), 'utf-8');
 }
 
 function publicAppSettings(settings = readAppSettings()) {
   return {
+    schemaVersion: settings.schemaVersion || SETTINGS_SCHEMA_VERSION,
     browserPath: settings.browserPath || '',
     updatedAt: settings.updatedAt || ''
   };
@@ -353,6 +363,7 @@ function saveAppSettings(update) {
   const next = {
     ...readAppSettings()
   };
+  next.schemaVersion = SETTINGS_SCHEMA_VERSION;
   if (Object.prototype.hasOwnProperty.call(update || {}, 'browserPath')) {
     const rawBrowserPath = String(update.browserPath || '').trim();
     if (rawBrowserPath) {
@@ -538,6 +549,14 @@ function pythonCommand() {
     return bundledPython.command;
   }
   return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+function pythonLibraryDir() {
+  try {
+    return path.dirname(findPythonScript('import_feishu.py'));
+  } catch (_error) {
+    return '';
+  }
 }
 
 function pythonEnv(extra = {}) {
@@ -1006,7 +1025,8 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: pythonEnv({
         WANDAO_TASK_ID: options?.taskId || '',
-        WANDAO_PROVIDER_ID: options?.providerId || ''
+        WANDAO_PROVIDER_ID: options?.providerId || '',
+        PYTHONPATH: [pythonLibraryDir(), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
       })
     });
 

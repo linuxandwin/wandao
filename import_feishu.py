@@ -64,6 +64,7 @@ from export_feishu import (
     start_chrome,
     wait_for_wiki_ready,
 )
+from wandao_report import finalize_report
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1925,6 +1926,10 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
 
     result_payload = {
         "provider": "feishu-import-openapi",
+        "totalDocs": 1,
+        "importedDocs": 1,
+        "importedCount": 1,
+        "failureCount": 0,
         "sourceFile": str(md_path),
         "title": title,
         "importTaskTitle": import_title,
@@ -1940,6 +1945,7 @@ def import_one_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         "movedToWiki": bool(move_result),
         "moveResult": move_result,
     }
+    result_payload = finalize_report(result_payload, provider="feishu-import-openapi", mode="import", output=md_path)
     emit(
         args,
         f"单篇 Markdown 导入完成：{title}",
@@ -2158,6 +2164,8 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         "provider": "feishu-import-openapi-batch",
         "sourceDir": str(Path(args.source_dir).resolve()),
         "total": len(docs),
+        "sourceDocCount": len(docs),
+        "importedDocs": len(imported),
         "folderPageCount": len(folder_pages),
         "importedCount": len(imported),
         "failureCount": len(failures),
@@ -2165,6 +2173,7 @@ def import_all_with_openapi(args: argparse.Namespace) -> dict[str, Any]:
         "imported": imported,
         "failures": failures,
     }
+    result = finalize_report(result, provider="feishu-import-openapi-batch", mode="import", output=Path(args.source_dir).resolve())
     emit(
         args,
         "飞书 Markdown 批量导入完成",
@@ -2711,10 +2720,18 @@ def main(argv: list[str]) -> int:
         print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except ExportStopped as exc:
+        emit(args, f"飞书导入任务已停止：{exc}", event="task.stopped", level="warn")
         print(f"Stopped: {exc}", file=sys.stderr)
         return 130
     except Exception as exc:
         maybe_open_permission_page(args, exc)
+        emit(
+            args,
+            f"飞书导入任务失败：{exc}",
+            event="task.failed",
+            level="error",
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

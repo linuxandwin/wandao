@@ -1,4 +1,5 @@
 {
+  "$schema": "../provider.schema.json",
   "schemaVersion": 1,
   "id": "your-custom-provider",
   "name": "你的复杂平台",
@@ -22,7 +23,7 @@
     "attachments": true,
     "tree": true,
     "batch": true,
-    "retry": false
+    "retryFailures": false
   },
   "requirements": {
     "python": [],

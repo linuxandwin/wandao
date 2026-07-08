@@ -60,6 +60,7 @@ from export_aliyun_thoughts import (
     throttle_request,
     wait_for_debug_port,
 )
+from wandao_report import finalize_report
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1175,7 +1176,7 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         report = {
             "provider": "feishu",
             "entryKind": entry_kind,
-            "mode": "incremental" if args.incremental else "full",
+            "exportMode": "incremental" if args.incremental else "full",
             "space": tree.get("space") or {},
             "spaceId": tree.get("spaceId"),
             "wikiUrl": wiki_url,
@@ -1195,13 +1196,15 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
             "imageFailures": image_failures,
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
-        (output / "00-导出报告.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path = output / "00-导出报告.json"
+        report = finalize_report(report, provider="feishu", mode="export", report_file=report_path, output=output)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         emit(
             args,
             "飞书导出完成" if not stopped else "飞书导出已停止",
             event="task.completed" if not stopped else "task.stopped",
             level="success" if not stopped else "warn",
-            reportFile=str(output / "00-导出报告.json"),
+            reportFile=str(report_path),
             stats={
                 "exportedDocs": exported,
                 "skippedDocs": skipped,

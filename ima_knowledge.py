@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from wandao_logging import emit_legacy
+from wandao_report import finalize_report
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -652,6 +653,7 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
         "elapsedSeconds": round(time.time() - started, 1),
         "requestCount": int(getattr(args, "_request_count", 0) or 0),
     }
+    report = finalize_report(report, provider="ima", mode="export", output=output)
     emit(
         "ima 导出完成" if not failures else f"ima 导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",
@@ -1009,6 +1011,7 @@ def import_files(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
         "elapsedSeconds": round(time.time() - started, 1),
         "requestCount": int(getattr(args, "_request_count", 0) or 0),
     }
+    report = finalize_report(report, provider="ima", mode="import", output=source_dir)
     emit(
         "ima 导入完成" if not failures else f"ima 导入完成，但有 {len(failures)} 个失败项",
         event="task.completed",

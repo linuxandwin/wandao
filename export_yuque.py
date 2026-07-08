@@ -61,6 +61,7 @@ from export_aliyun_thoughts import (
     throttle_request,
     wait_for_debug_port,
 )
+from wandao_report import finalize_report
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -864,6 +865,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         report_path = output / "00-导出报告.json"
+        report = finalize_report(report, provider="yuque", mode="export", report_file=report_path, output=output)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         emit(
             args,

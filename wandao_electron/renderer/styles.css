@@ -1809,6 +1809,11 @@ select:focus-visible {
   color: var(--text-2);
 }
 
+.log-entry.muted {
+  color: var(--text-3);
+  font-family: var(--font-sans);
+}
+
 .log-entry.error {
   color: var(--danger);
 }
@@ -1926,6 +1931,22 @@ select:focus-visible {
   margin-top: 6px;
   word-break: break-word;
   line-height: 1.5;
+}
+
+.task-history-failures {
+  margin-top: 7px;
+  padding: 7px 9px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--r-xs);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.task-history-failures div + div {
+  margin-top: 4px;
 }
 
 .task-history-buttons {

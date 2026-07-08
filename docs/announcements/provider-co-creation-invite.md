@@ -24,14 +24,15 @@
 
 ## 新平台怎么接入
 
-万能导提供了两种模板：
+万能导提供了三种模板：
 
 ```text
 providers/_template_standard/
+providers/_template_import/
 providers/_template_custom/
 ```
 
-标准平台优先复制 `providers/_template_standard/`，只需要改 `provider.json`、`README.md` 和 `actions.py`。
+标准导出平台优先复制 `providers/_template_standard/`，标准导入平台优先复制 `providers/_template_import/`，只需要改 `provider.json`、`README.md` 和 `actions.py`。
 
 复杂平台可以复制 `providers/_template_custom/`，先把流程拆成登录、权限检测、读取目录、导出或导入、失败重试等动作。如果标准 UI 不够，也可以在 PR 里说明需要什么专属 UI。
 

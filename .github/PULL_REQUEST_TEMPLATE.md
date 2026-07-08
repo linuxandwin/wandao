@@ -28,6 +28,8 @@
 
 ## 测试方式
 
+- [ ] 我已运行 `python scripts/quality_check.py`
+- [ ] 如果涉及 `providers/` 或公告索引，我已运行 `python scripts/validate_providers.py`
 - [ ] 我已运行相关 Python 编译检查
 - [ ] 我已运行 Electron JS 语法检查
 - [ ] 我已在桌面端手动测试
