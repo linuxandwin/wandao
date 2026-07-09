@@ -143,6 +143,16 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIsNotNone(ima_import_block)
         self.assertNotIn("checkpoint: { supported: true", ima_import_block.group(0))
 
+    def test_checkpoint_runtime_is_bundled_for_packaged_app(self) -> None:
+        package_json = read_text("wandao_electron/package.json")
+        pyproject = read_text("pyproject.toml")
+
+        self.assertIn('"version": "1.2.5"', package_json)
+        self.assertIn('"from": "../wandao_checkpoint.py"', package_json)
+        self.assertIn('"to": "python/wandao_checkpoint.py"', package_json)
+        self.assertIn('version = "1.2.5"', pyproject)
+        self.assertIn('"wandao_checkpoint"', pyproject)
+
 
 if __name__ == "__main__":
     unittest.main()
