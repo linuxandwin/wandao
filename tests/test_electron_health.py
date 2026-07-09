@@ -89,6 +89,37 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("if (task.status === 'running') return false", app_js)
         self.assertIn("该平台暂未声明失败项重试能力", app_js)
 
+    def test_scan_toc_passes_provider_id_to_python_process(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertIn("runPythonCommand(config.script, args, {", app_js)
+        self.assertIn("providerId: toolId", app_js)
+
+    def test_group_toc_progress_is_labeled_as_topic_list_reading(self) -> None:
+        structured_logs_js = read_text("wandao_electron/renderer/structured_logs.js")
+
+        self.assertIn("stats.groupPage", structured_logs_js)
+        self.assertIn("帖子列表读取：已读取", structured_logs_js)
+        self.assertIn("帖子列表读取 ${current}/${total || '?'}", structured_logs_js)
+        self.assertIn("已跳过视频帖", structured_logs_js)
+
+    def test_zsxq_group_and_column_are_separate_providers(self) -> None:
+        providers_js = read_text("wandao_electron/renderer/providers.js")
+        index_html = read_text("wandao_electron/renderer/index.html")
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertIn("id: 'zsxq-group'", providers_js)
+        self.assertIn("id: 'zsxq-column'", providers_js)
+        self.assertIn("capabilities: { login: true, scanToc: false }", providers_js)
+        self.assertIn("capabilities: { login: true, scanToc: true }", providers_js)
+        self.assertIn('template id="template-zsxq-group"', index_html)
+        self.assertIn('template id="template-zsxq-column"', index_html)
+        self.assertIn('id="zsxq-group-download-files"', index_html)
+        self.assertIn('id="zsxq-column-download-files"', index_html)
+        self.assertIn("知识星球 Group 单次最多导出 500 条", app_js)
+        self.assertIn("validateZsxqUrlForTool", app_js)
+        self.assertIn("toolId === 'zsxq-column'", app_js)
+
 
 if __name__ == "__main__":
     unittest.main()

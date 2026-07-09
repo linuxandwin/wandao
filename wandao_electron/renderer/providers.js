@@ -54,15 +54,27 @@
 
   [
     {
-      id: 'zsxq',
+      id: 'zsxq-group',
       platform: 'zsxq',
-      navLabel: '知识星球导出',
-      title: '知识星球任意项目/专栏导出',
-      description: '将知识星球内容导出为本地 Markdown 文件',
+      navLabel: '知识星球 Group 导出',
+      title: '知识星球 Group 帖子导出',
+      description: '按数量导出知识星球 Group 里的最新、精华或星主帖子',
       script: 'export_zsxq.py',
       urlParam: '--entry-url',
       outputParam: '--output',
-      defaults: { output: 'exports/zsxq' },
+      defaults: { output: 'exports/zsxq-group' },
+      capabilities: { login: true, scanToc: false }
+    },
+    {
+      id: 'zsxq-column',
+      platform: 'zsxq',
+      navLabel: '知识星球专栏导出',
+      title: '知识星球专栏导出',
+      description: '读取知识星球专栏目录，按章节导出 Markdown',
+      script: 'export_zsxq.py',
+      urlParam: '--entry-url',
+      outputParam: '--output',
+      defaults: { output: 'exports/zsxq-column' },
       capabilities: { login: true, scanToc: true }
     },
     {
@@ -217,7 +229,7 @@
   ].forEach(register);
 
   window.WandaoProviders = {
-    defaultId: 'zsxq',
+    defaultId: 'zsxq-group',
     register,
     registerMany,
     get(id) {

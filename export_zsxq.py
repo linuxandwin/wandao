@@ -35,6 +35,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
+import hashlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -65,6 +67,9 @@ PROJECT_DIR = SCRIPT_DIR
 DEFAULT_PROFILE = ".zsxq-chrome-profile"
 DEFAULT_AUTH_FILE = ".zsxq_auth.json"
 DEFAULT_ENTRY_URL = ""
+DEFAULT_GROUP_LIMIT = 50
+DEFAULT_GROUP_BATCH_SIZE = 60
+MAX_GROUP_LIMIT = 500
 
 
 class SkipDocument(Exception):
@@ -253,6 +258,23 @@ def throttle_request(args: argparse.Namespace | None) -> None:
     args._request_count = int(getattr(args, "_request_count", 0) or 0) + 1
 
 
+def throttle_comment_request(args: argparse.Namespace | None) -> None:
+    if not args:
+        return
+    delay = max(
+        float(getattr(args, "request_delay", 0) or 0),
+        float(getattr(args, "comment_request_delay", 3.0) or 0),
+    )
+    jitter = max(
+        float(getattr(args, "request_jitter", 0) or 0),
+        float(getattr(args, "comment_request_jitter", 2.0) or 0),
+    )
+    pause = delay + (random.uniform(0, jitter) if jitter else 0)
+    if pause > 0:
+        wait_with_stop(args, pause)
+    args._comment_request_count = int(getattr(args, "_comment_request_count", 0) or 0) + 1
+
+
 def detect_rate_limited_page(cdp: CDPClient) -> dict[str, Any]:
     try:
         return cdp.evaluate(
@@ -305,6 +327,30 @@ def pause_for_rate_limit(args: argparse.Namespace | None, label: str, attempt: i
     pause = rate_limit_pause_seconds(args, attempt + 1)
     emit(args, f"触发请求频率限制，暂停 {format_duration(pause)} 后重试：{label}")
     wait_with_stop(args, pause)
+
+
+def pause_between_group_pages(args: argparse.Namespace | None, page_count: int, total_topics: int) -> None:
+    if not args:
+        return
+    delay = max(0.0, float(getattr(args, "group_page_delay", 4.0) or 0))
+    jitter = max(0.0, float(getattr(args, "group_page_jitter", 4.0) or 0))
+    pause = delay + (random.uniform(0, jitter) if jitter else 0)
+    if pause <= 0:
+        return
+    emit(
+        args,
+        f"目录读取保护：已读取 {page_count} 页/{total_topics} 篇，暂停 {format_duration(pause)} 后继续。",
+        event="task.paused",
+        level="info",
+        stats={"groupPage": page_count, "tocTopicCount": total_topics, "pauseSeconds": round(pause, 1)},
+    )
+    wait_with_stop(args, pause)
+
+
+def should_long_sleep_after_export(args: argparse.Namespace, exported_count: int) -> bool:
+    after = int(getattr(args, "long_sleep_after", 25) or 0)
+    every = int(getattr(args, "long_sleep_every", 12) or 0)
+    return after > 0 and every > 0 and exported_count > after and exported_count % every == 0
 
 
 def navigate_with_retry(cdp: CDPClient, url: str, args: argparse.Namespace | None = None) -> None:
@@ -994,6 +1040,260 @@ def is_column_entry_url(entry_url: str) -> bool:
     return "/columns/" in urllib.parse.urlparse(entry_url).path
 
 
+def group_id_from_url(entry_url: str) -> str:
+    parsed = urllib.parse.urlparse(entry_url or "")
+    candidates = [parsed.path or "", parsed.fragment or ""]
+    for key in ("group_id", "groupId", "group"):
+        value = urllib.parse.parse_qs(parsed.query).get(key, [""])[0]
+        if value:
+            candidates.append(value)
+    for candidate in candidates:
+        match = re.search(r"(?:^|/)(?:group|groups|columns)/(\d+)(?:/|$)", candidate)
+        if match:
+            return match.group(1)
+        if re.fullmatch(r"\d{6,}", candidate.strip()):
+            return candidate.strip()
+    return ""
+
+
+def is_group_entry_url(entry_url: str) -> bool:
+    parsed = urllib.parse.urlparse(entry_url or "")
+    return bool(group_id_from_url(entry_url)) and not parsed.path.startswith("/columns/")
+
+
+def group_scope_from_args(entry_url: str, args: argparse.Namespace | None = None) -> str:
+    scope = str((getattr(args, "group_scope", "auto") if args else "auto") or "auto").strip()
+    if scope and scope != "auto":
+        return scope
+    parsed = urllib.parse.urlparse(entry_url or "")
+    if "/digests" in parsed.path or "/digests" in parsed.fragment:
+        return "digests"
+    return "all"
+
+
+def normalize_group_limit(args: argparse.Namespace | None = None) -> int:
+    raw_limit = int((getattr(args, "limit", 0) if args else 0) or 0)
+    if raw_limit <= 0:
+        return DEFAULT_GROUP_LIMIT
+    if raw_limit > MAX_GROUP_LIMIT:
+        raise ExportError(f"知识星球 Group 单次最多导出 {MAX_GROUP_LIMIT} 条。大星球请分批导出，避免触发风控。")
+    return raw_limit
+
+
+def group_scope_title(scope: str) -> str:
+    return {
+        "all": "全部主题",
+        "digests": "精华主题",
+        "by_owner": "只看星主",
+    }.get(scope, "全部主题")
+
+
+def group_topic_to_item(topic: dict[str, Any], scope: str, index: int, include_raw: bool = True) -> dict[str, Any]:
+    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
+    item = {
+        "key": f"group:{scope}:{index}:{topic_id or index}",
+        "groupIndex": 0,
+        "topicIndex": index,
+        "groupTitle": group_scope_title(scope),
+        "title": topic_title_for_list(topic),
+        "preview": topic_preview_text(topic),
+        "topicId": topic_id,
+        "topicUid": topic_id,
+        "topicUrl": f"https://wx.zsxq.com/topic/{topic_id}" if topic_id else "",
+        "createTime": topic.get("create_time") or "",
+        "digested": bool(topic.get("digested")),
+    }
+    if include_raw:
+        item["rawTopic"] = topic
+    return item
+
+
+def previous_zsxq_end_time(create_time: str) -> str:
+    create_time = str(create_time or "").strip()
+    match = re.match(r"^(.+?T\d{2}:\d{2}:\d{2}\.)(\d{3})(.*)$", create_time)
+    if not match:
+        return create_time
+    prefix, millis, suffix = match.groups()
+    value = int(millis)
+    if value > 0:
+        return f"{prefix}{value - 1:03d}{suffix}"
+    dt_match = re.match(r"^(?P<body>.+?T\d{2}:\d{2}:\d{2})\.000(?P<tz>Z|[+-]\d{2}:?\d{2})?$", create_time)
+    if not dt_match:
+        return f"{prefix}000{suffix}"
+    body = dt_match.group("body")
+    tz = dt_match.group("tz") or ""
+    try:
+        previous = datetime.strptime(body, "%Y-%m-%dT%H:%M:%S") - timedelta(milliseconds=1)
+    except ValueError:
+        return f"{prefix}000{suffix}"
+    return f"{previous.strftime('%Y-%m-%dT%H:%M:%S')}.999{tz}"
+
+
+def topic_preview_text(topic: dict[str, Any]) -> str:
+    _, primary = topic_source(topic)
+    text = str(topic.get("title") or primary.get("title") or primary.get("text") or topic.get("text") or "").strip()
+    text = re.sub(r"<e\b[^>]*/>", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def topic_title_for_list(topic: dict[str, Any], fallback: str = "知识星球主题") -> str:
+    text = topic_preview_text(topic)
+    if text:
+        return text[:80]
+    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
+    return f"{fallback}-{topic_id}" if topic_id else fallback
+
+
+def fetch_group_topics_page(
+    cdp: CDPClient,
+    group_id: str,
+    scope: str,
+    end_time: str,
+    count: int,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    scope_param = "" if scope == "all" else scope
+    expression = f"""
+    (async () => {{
+      const groupId = {json.dumps(group_id)};
+      const count = {int(count)};
+      const scope = {json.dumps(scope_param)};
+      const endTime = {json.dumps(end_time or "")};
+      const makeUrl = (base) => {{
+        const url = new URL(base);
+        url.searchParams.set("count", String(count));
+        if (scope) url.searchParams.set("scope", scope);
+        if (endTime) url.searchParams.set("end_time", endTime);
+        return url.toString();
+      }};
+      const urls = [
+        makeUrl(`https://api.zsxq.com/v2/groups/${{groupId}}/topics`),
+        makeUrl(`https://api.zsxq.com/v1.10/groups/${{groupId}}/topics`)
+      ];
+      const parseZsxqJson = (raw) => JSON.parse(raw.replace(
+        /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\\s*:\\s*)(\\d{{15,}})/g,
+        '$1"$2"'
+      ));
+      const attempts = [];
+      for (const url of urls) {{
+        try {{
+          const r = await fetch(url, {{
+            credentials: "include",
+            headers: {{accept: "application/json, text/plain, */*"}}
+          }});
+          const text = await r.text();
+          const rateLimited = r.status === 429 || /Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁/i.test(text);
+          let data = {{}};
+          try {{ data = parseZsxqJson(text); }} catch (err) {{}}
+          const antiCrawl = String(data && data.code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
+          const topics = data && data.resp_data && Array.isArray(data.resp_data.topics) ? data.resp_data.topics : [];
+          attempts.push({{url, status: r.status, ok: !!data.succeeded, topicCount: topics.length, message: data && data.msg || ""}});
+          if (rateLimited || antiCrawl) return {{ok: false, rateLimited: true, status: r.status, text: text.slice(0, 240), attempts}};
+          if (data && data.succeeded && Array.isArray(data.resp_data && data.resp_data.topics)) {{
+            return {{
+              ok: true,
+              status: r.status,
+              url,
+              topics,
+              attempts,
+              text: text.slice(0, 240)
+            }};
+          }}
+        }} catch (err) {{
+          attempts.push({{url, ok: false, error: String(err)}});
+        }}
+      }}
+      return {{ok: false, attempts, text: attempts.map(x => x.message || x.error || x.status || "").join("; ").slice(0, 240)}};
+    }})()
+    """
+    retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
+    result: dict[str, Any] = {}
+    for attempt in range(retries + 1):
+        check_stopped(args)
+        throttle_request(args)
+        result = cdp.evaluate(expression, timeout=60) or {}
+        if result.get("rateLimited"):
+            pause_for_rate_limit(args, f"知识星球 group topics {group_id}", attempt, retries)
+            continue
+        return result
+    return result
+
+
+def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    group_id = group_id_from_url(entry_url)
+    if not group_id:
+        raise ExportError("无法从知识星球 group URL 中识别星球 ID")
+    scope = group_scope_from_args(entry_url, args)
+    count = max(1, min(100, int((getattr(args, "group_page_size", DEFAULT_GROUP_BATCH_SIZE) if args else DEFAULT_GROUP_BATCH_SIZE) or DEFAULT_GROUP_BATCH_SIZE)))
+    max_pages = max(1, int((getattr(args, "group_max_pages", 200) if args else 200) or 200))
+    limit = normalize_group_limit(args)
+    navigate_with_retry(cdp, entry_url, args)
+
+    topics: list[dict[str, Any]] = []
+    seen_topic_ids: set[str] = set()
+    end_time = ""
+    page_count = 0
+    while page_count < max_pages:
+        check_stopped(args)
+        result = fetch_group_topics_page(cdp, group_id, scope, end_time, count, args)
+        if not result.get("ok"):
+            raise ExportError(result.get("text") or f"知识星球 group 主题列表读取失败：{group_id}")
+        batch = [topic for topic in result.get("topics") or [] if isinstance(topic, dict)]
+        page_count += 1
+        added = 0
+        for topic in batch:
+            topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
+            if topic_id and topic_id in seen_topic_ids:
+                continue
+            if topic_id:
+                seen_topic_ids.add(topic_id)
+            topics.append(topic)
+            added += 1
+            if limit and len(topics) >= limit:
+                break
+        emit(
+            args,
+            f"知识星球 group 帖子列表读取：page={page_count} batch={len(batch)} total={len(topics)} target={limit} scope={scope}",
+            event="task.progress",
+            progress={"current": len(topics), "total": limit},
+            stats={"groupPage": page_count, "groupBatchTopics": len(batch)},
+        )
+        if limit and len(topics) >= limit:
+            break
+        if not batch or added == 0 or len(batch) < count:
+            break
+        last_time = str(batch[-1].get("create_time") or "").strip()
+        if not last_time or last_time == end_time:
+            break
+        end_time = previous_zsxq_end_time(last_time)
+        pause_between_group_pages(args, page_count, len(topics))
+
+    group_title = group_scope_title(scope)
+    items: list[dict[str, Any]] = []
+    for index, topic in enumerate(topics):
+        items.append(group_topic_to_item(topic, scope, index, include_raw=not getattr(args, "scan_toc", False)))
+    return {
+        "href": entry_url,
+        "title": f"知识星球 {group_title}",
+        "groupId": group_id,
+        "scope": scope,
+        "pageCount": page_count,
+        "groups": [
+            {
+                "key": f"group:{scope}",
+                "groupIndex": 0,
+                "groupTitle": group_title,
+                "expectedCount": len(items),
+                "topicCount": len(items),
+                "topics": items,
+            }
+        ],
+        "totalTopics": len(items),
+    }
+
+
 def collect_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
     navigate_with_retry(cdp, entry_url, args)
     wait_eval(
@@ -1058,6 +1358,8 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
         except (ExportStopped, SkipDocument):
             raise
         except Exception as exc:
+            if str(source.get("key") or "").startswith("group:"):
+                raise ExportError(f"知识星球 group 主题 API 读取失败：{source.get('title') or source.get('topicId') or source.get('key')} ({exc})") from exc
             emit(args, f"目录 API 读取失败，改用页面点击：{source.get('title') or source.get('key')} ({exc})")
     info = cdp.evaluate(f"({ZSXQ_OPEN_TOC_ITEM_JS})({json.dumps(source, ensure_ascii=False)})", timeout=60) or {}
     if not info.get("ok"):
@@ -1159,9 +1461,14 @@ def inspect_topic_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace | 
         }});
         const text = await r.text();
         const rateLimited = r.status === 429 || /Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁/i.test(text);
+        const parseZsxqJson = (raw) => JSON.parse(raw.replace(
+          /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\\s*:\\s*)(\\d{{15,}})/g,
+          '$1"$2"'
+        ));
         let data = {{}};
-        try {{ data = JSON.parse(text); }} catch (err) {{}}
-        if (rateLimited) {{
+        try {{ data = parseZsxqJson(text); }} catch (err) {{}}
+        const antiCrawl = String(data && data.code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
+        if (rateLimited || antiCrawl) {{
           return {{ok: false, rateLimited: true, status: r.status, text: text.slice(0, 200)}};
         }}
         const topic = data && data.resp_data && data.resp_data.topic || {{}};
@@ -1206,11 +1513,16 @@ def fetch_topic_info_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace
         }});
         const text = await r.text();
         const rateLimited = r.status === 429 || /Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁/i.test(text);
+        const parseZsxqJson = (raw) => JSON.parse(raw.replace(
+          /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\\s*:\\s*)(\\d{{15,}})/g,
+          '$1"$2"'
+        ));
         let data = {{}};
-        try {{ data = JSON.parse(text); }} catch (err) {{}}
+        try {{ data = parseZsxqJson(text); }} catch (err) {{}}
+        const antiCrawl = String(data && data.code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
         return {{
           ok: !!data.succeeded,
-          rateLimited,
+          rateLimited: rateLimited || antiCrawl,
           status: r.status,
           text: text.slice(0, 300),
           topic: data && data.resp_data && data.resp_data.topic || {{}}
@@ -1246,11 +1558,19 @@ def zsxq_rich_text_to_markdown(text: str) -> str:
         typ = attrs.get("type", "")
         title = attrs.get("title") or attrs.get("text") or ""
         href = attrs.get("href") or attrs.get("url") or ""
-        if typ == "web" and href:
+        if typ in {"web", "web_url"} and href:
             return f"[{title or href}]({href})"
         if typ in {"text_bold", "bold"}:
             return f"**{title}**" if title else ""
+        if typ in {"text_italic", "italic"}:
+            return f"*{title}*" if title else ""
+        if typ in {"text_strikethrough", "strikethrough"}:
+            return f"~~{title}~~" if title else ""
+        if typ in {"text_underline", "underline"}:
+            return title
         if typ in {"hashtag", "tag"}:
+            return title
+        if typ == "mention":
             return title
         if href:
             return f"[{title or href}]({href})"
@@ -1271,6 +1591,26 @@ def topic_source(topic: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return str(topic.get("type") or "topic"), {}
 
 
+def topic_has_exportable_content(topic: dict[str, Any]) -> bool:
+    if not isinstance(topic, dict) or not topic:
+        return False
+    source_type, primary = topic_source(topic)
+    if not source_type or not isinstance(primary, dict) or not primary:
+        return False
+    if str(primary.get("text") or "").strip():
+        return True
+    if primary.get("images") or primary.get("files") or primary.get("video"):
+        return True
+    article = primary.get("article") if isinstance(primary.get("article"), dict) else {}
+    if article.get("article_url") or article.get("inline_article_url"):
+        return True
+    for key in ("question", "answer", "solution"):
+        value = topic.get(key)
+        if isinstance(value, dict) and str(value.get("text") or "").strip():
+            return True
+    return False
+
+
 def image_urls_from_sources(*sources: dict[str, Any]) -> list[str]:
     urls: list[str] = []
     for source in sources:
@@ -1286,6 +1626,84 @@ def image_urls_from_sources(*sources: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+def files_from_sources(*sources: dict[str, Any]) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    for source in sources:
+        for file_item in source.get("files") or []:
+            if not isinstance(file_item, dict):
+                continue
+            name = str(
+                file_item.get("name")
+                or file_item.get("title")
+                or file_item.get("file_name")
+                or file_item.get("filename")
+                or "知识星球文件"
+            ).strip()
+            url = str(
+                file_item.get("download_url")
+                or file_item.get("url")
+                or file_item.get("file_url")
+                or file_item.get("href")
+                or ""
+            ).strip()
+            files.append(
+                {
+                    "name": name,
+                    "url": url,
+                    "size": str(file_item.get("size") or ""),
+                    "downloadCount": str(file_item.get("download_count") or ""),
+                }
+            )
+    unique: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for file_item in files:
+        key = file_item.get("url") or file_item.get("name") or ""
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(file_item)
+    return unique
+
+
+def format_zsxq_size(value: Any) -> str:
+    try:
+        size = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if size <= 0:
+        return ""
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.2f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+
+
+def topic_owner_name(topic: dict[str, Any], primary: dict[str, Any]) -> str:
+    for owner in (primary.get("owner"), topic.get("owner")):
+        if isinstance(owner, dict):
+            name = str(owner.get("name") or owner.get("alias") or "").strip()
+            if name:
+                return name
+    return ""
+
+
+def topic_meta_line(topic: dict[str, Any], primary: dict[str, Any]) -> str:
+    parts: list[str] = []
+    owner = topic_owner_name(topic, primary)
+    if owner:
+        parts.append(owner)
+    if topic.get("create_time"):
+        parts.append(str(topic.get("create_time")))
+    if topic.get("likes_count"):
+        parts.append(f"赞 {topic.get('likes_count')}")
+    if topic.get("comments_count"):
+        parts.append(f"评论 {topic.get('comments_count')}")
+    if topic.get("readers_count") or topic.get("reading_count"):
+        parts.append(f"阅读 {topic.get('readers_count') or topic.get('reading_count')}")
+    return " · ".join(parts)
+
+
 def markdown_links(markdown: str) -> list[dict[str, str]]:
     links: list[dict[str, str]] = []
     for match in re.finditer(r"\[([^\]]{0,200})\]\((https?://[^)\s]+)\)", markdown):
@@ -1296,53 +1714,115 @@ def markdown_links(markdown: str) -> list[dict[str, str]]:
     return unique_zsxq_links(links)
 
 
-def comments_from_topic_api(topic: dict[str, Any]) -> list[dict[str, str]]:
+def comments_from_zsxq_items(items: list[Any]) -> list[dict[str, str]]:
     comments: list[dict[str, str]] = []
-    for item in topic.get("show_comments") or []:
+
+    def append_item(item: Any, parent_author: str = "") -> None:
         if not isinstance(item, dict):
-            continue
+            return
         text = zsxq_rich_text_to_markdown(str(item.get("text") or "")).strip()
-        if not text:
-            continue
         owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
-        comments.append(
-            {
-                "author": str(owner.get("name") or ""),
-                "time": str(item.get("create_time") or ""),
-                "text": text,
-            }
-        )
+        repliee = item.get("repliee") if isinstance(item.get("repliee"), dict) else {}
+        author = str(owner.get("name") or "").strip()
+        if repliee.get("name"):
+            author = f"{author} 回复 {repliee.get('name')}".strip()
+        elif parent_author and author:
+            author = f"{author} 回复 {parent_author}".strip()
+        if text:
+            comments.append(
+                {
+                    "author": author,
+                    "time": str(item.get("create_time") or ""),
+                    "text": text,
+                }
+            )
+        for reply in item.get("replied_comments") or []:
+            append_item(reply, author or parent_author)
+
+    for item in items or []:
+        append_item(item)
     return comments
 
 
-def content_from_topic_api(topic: dict[str, Any], source: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
-    source_type, primary = topic_source(topic)
-    extra_sources: list[dict[str, Any]] = [primary]
-    if source_type == "question":
-        for key in ("answer", "solution"):
-            if isinstance(topic.get(key), dict):
-                extra_sources.append(topic[key])
+def comments_from_topic_api(topic: dict[str, Any]) -> list[dict[str, str]]:
+    return comments_from_zsxq_items(topic.get("show_comments") or [])
 
-    raw_parts: list[str] = []
-    for part in extra_sources:
-        text = str(part.get("text") or "").strip()
-        if text:
-            raw_parts.append(text)
-    body = "\n\n".join(zsxq_rich_text_to_markdown(part) for part in raw_parts if part)
+
+def content_from_topic_api(
+    topic: dict[str, Any],
+    source: dict[str, Any],
+    args: argparse.Namespace | None = None,
+    comments: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    source_type, primary = topic_source(topic)
+    section_sources: list[tuple[str, dict[str, Any]]] = []
+    if source_type in {"question", "answer", "solution", "q&a"} or isinstance(topic.get("question"), dict):
+        question = topic.get("question") if isinstance(topic.get("question"), dict) else {}
+        answer = topic.get("answer") if isinstance(topic.get("answer"), dict) else {}
+        solution = topic.get("solution") if isinstance(topic.get("solution"), dict) else {}
+        if question:
+            section_sources.append(("问题", question))
+        if answer:
+            section_sources.append(("回答", answer))
+        elif solution:
+            section_sources.append(("回答", solution))
+    if not section_sources:
+        section_sources.append(("", primary))
+    extra_sources = [part for _label, part in section_sources if part]
+
+    body_parts: list[str] = []
+    for label, part in section_sources:
+        text = zsxq_rich_text_to_markdown(str(part.get("text") or "")).strip()
+        if not text:
+            continue
+        if label:
+            body_parts.append(f"## {label}\n\n{text}")
+        else:
+            body_parts.append(text)
+    body = "\n\n".join(body_parts).strip()
     title = str(topic.get("title") or source.get("title") or "").strip()
     if not title:
         title = re.sub(r"\s+", " ", body).strip()[:80] or "知识星球文档"
 
     image_urls = image_urls_from_sources(*extra_sources)
-    image_markdown = "\n".join(f"![]({url})" for url in image_urls)
-    markdown = f"# {title}\n\n{body.strip()}\n"
-    if image_markdown:
-        markdown += f"\n{image_markdown}\n"
+    file_items = files_from_sources(*extra_sources)
 
     article_url = ""
     for part in extra_sources:
         article = part.get("article") if isinstance(part.get("article"), dict) else {}
         article_url = article.get("article_url") or article.get("inline_article_url") or article_url
+
+    lines: list[str] = [f"# {title}", ""]
+    meta = topic_meta_line(topic, primary)
+    if meta:
+        lines.extend([f"> {meta}", ""])
+    if body:
+        lines.extend([body, ""])
+    if article_url:
+        article_title = ""
+        for part in extra_sources:
+            article = part.get("article") if isinstance(part.get("article"), dict) else {}
+            article_title = article.get("title") or article_title
+        lines.extend([f"> 完整文章：[{article_title or article_url}]({article_url})", ""])
+    if image_urls:
+        lines.extend(["## 图片", ""])
+        for index, url in enumerate(image_urls, 1):
+            lines.extend([f"![图片 {index}]({url})", ""])
+    if file_items:
+        lines.extend(["## 附件", ""])
+        for file_item in file_items:
+            name = file_item.get("name") or "知识星球文件"
+            url = file_item.get("url") or ""
+            extra = []
+            size_text = format_zsxq_size(file_item.get("size"))
+            if size_text:
+                extra.append(size_text)
+            if file_item.get("downloadCount"):
+                extra.append(f"下载 {file_item.get('downloadCount')} 次")
+            label = f"{name}（{' · '.join(extra)}）" if extra else name
+            lines.append(f"- [{label}]({url})" if url else f"- {label}")
+        lines.append("")
+    markdown = "\n".join(lines).rstrip() + "\n"
 
     topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or source.get("topicId") or "")
     topic_url = f"https://wx.zsxq.com/topic/{topic_id}" if topic_id else ""
@@ -1350,6 +1830,7 @@ def content_from_topic_api(topic: dict[str, Any], source: dict[str, Any], args: 
         "title": title,
         "markdown": markdown,
         "images": image_urls,
+        "files": file_items,
         "zsxqLinks": markdown_links(markdown),
         "sourceType": f"topic-api:{source_type}",
         "shortUrl": "",
@@ -1361,26 +1842,151 @@ def content_from_topic_api(topic: dict[str, Any], source: dict[str, Any], args: 
         "tocTitle": source.get("title") or title,
     }
     if getattr(args, "include_comments", False):
-        attach_comments_to_content(content, comments_from_topic_api(topic), True)
+        attach_comments_to_content(content, comments if comments is not None else comments_from_topic_api(topic), True)
     return content
+
+
+def fetch_topic_comments_api(
+    cdp: CDPClient,
+    topic_id: str,
+    args: argparse.Namespace | None = None,
+) -> list[dict[str, str]]:
+    if not topic_id or not getattr(args, "include_comments", False):
+        return []
+    expression = f"""
+    (async () => {{
+      const topicId = {json.dumps(topic_id)};
+      const makeUrl = (base) => {{
+        const url = new URL(base);
+        url.searchParams.set("count", "100");
+        url.searchParams.set("sort", "asc");
+        url.searchParams.set("sort_type", "by_create_time");
+        url.searchParams.set("with_sticky", "true");
+        return url.toString();
+      }};
+      const urls = [
+        makeUrl(`https://api.zsxq.com/v2/topics/${{topicId}}/comments`),
+        makeUrl(`https://api.zsxq.com/v1.10/topics/${{topicId}}/comments`)
+      ];
+      const parseZsxqJson = (raw) => JSON.parse(raw.replace(
+        /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\\s*:\\s*)(\\d{{15,}})/g,
+        '$1"$2"'
+      ));
+      const attempts = [];
+      for (const url of urls) {{
+        try {{
+          const r = await fetch(url, {{
+            credentials: "include",
+            headers: {{accept: "application/json, text/plain, */*"}}
+          }});
+          const text = await r.text();
+          const rateLimited = r.status === 429 || /Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁/i.test(text);
+          let data = {{}};
+          try {{ data = parseZsxqJson(text); }} catch (err) {{}}
+          const antiCrawl = String(data && data.code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
+          const comments = data && data.resp_data && Array.isArray(data.resp_data.comments) ? data.resp_data.comments : [];
+          attempts.push({{url, status: r.status, ok: !!data.succeeded, commentCount: comments.length, message: data && data.msg || ""}});
+          if (rateLimited || antiCrawl) return {{ok: false, rateLimited: true, status: r.status, text: text.slice(0, 240), attempts}};
+          if (data && data.succeeded && Array.isArray(data.resp_data && data.resp_data.comments)) {{
+            return {{ok: true, status: r.status, comments, attempts}};
+          }}
+        }} catch (err) {{
+          attempts.push({{url, ok: false, error: String(err)}});
+        }}
+      }}
+      return {{ok: false, attempts}};
+    }})()
+    """
+    retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
+    result: dict[str, Any] = {}
+    for attempt in range(retries + 1):
+        check_stopped(args)
+        throttle_comment_request(args)
+        result = cdp.evaluate(expression, timeout=45) or {}
+        if result.get("rateLimited"):
+            pause_for_rate_limit(args, f"topic comments API {topic_id}", attempt, retries)
+            continue
+        break
+    if not result.get("ok"):
+        return []
+    return comments_from_zsxq_items(result.get("comments") or [])
+
+
+def collect_article_content(
+    cdp: CDPClient,
+    article_url: str,
+    fallback_title: str,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
+    for attempt in range(retries + 1):
+        check_stopped(args)
+        navigate_with_retry(cdp, article_url, args)
+        wait_eval(
+            cdp,
+            "({href: location.href, ok: !!document.querySelector('.content.ql-editor'), len: (document.body && document.body.innerText || '').length})",
+            lambda value: bool(value.get("ok")) or value.get("len", 0) > 1000,
+            timeout=35,
+            args=args,
+        )
+        if detect_rate_limited_page(cdp).get("limited"):
+            pause_for_rate_limit(args, article_url, attempt, retries)
+            continue
+        content = cdp.evaluate(
+            f"({ZSXQ_CONVERTER_JS})({js_string(fallback_title or '知识星球文章')}, {js_string('.content.ql-editor')})",
+            timeout=90,
+        )
+        if content_is_rate_limited(content):
+            pause_for_rate_limit(args, article_url, attempt, retries)
+            continue
+        content["sourceType"] = "article"
+        content["articleUrl"] = cdp.evaluate("location.href", timeout=10) or article_url
+        return content
+    raise ExportError(f"知识星球文章页触发频率限制，重试仍失败：{article_url}")
 
 
 def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
     topic_id = str(source.get("topicId") or source.get("topicUid") or "").strip()
     if not topic_id:
         raise ExportError("目录条目缺少 topicId，无法走 API")
-    result = fetch_topic_info_api(cdp, topic_id, args)
-    if result.get("rateLimited"):
-        raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or topic_id}")
-    if not result.get("ok"):
-        raise ExportError(result.get("error") or result.get("text") or f"topic API 读取失败：{topic_id}")
-    topic = result.get("topic") or {}
+    raw_topic = source.get("rawTopic") if isinstance(source.get("rawTopic"), dict) else {}
+    topic = raw_topic if topic_has_exportable_content(raw_topic) else {}
+    if not topic:
+        result = fetch_topic_info_api(cdp, topic_id, args)
+        if result.get("rateLimited"):
+            raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or topic_id}")
+        if not result.get("ok"):
+            raise ExportError(result.get("error") or result.get("text") or f"topic API 读取失败：{topic_id}")
+        topic = result.get("topic") or {}
     source_type, primary = topic_source(topic)
     has_video = any(bool(part.get("video")) for part in [primary])
     has_article = any(bool((part.get("article") or {}).get("article_url") or (part.get("article") or {}).get("inline_article_url")) for part in [primary])
     if has_video and not has_article and getattr(args, "skip_video_topics", True):
         raise SkipDocument("video-topic", title=source.get("title") or topic.get("title") or topic_id, href=f"https://wx.zsxq.com/topic/{topic_id}")
-    return content_from_topic_api(topic, source, args)
+    comments = None
+    if getattr(args, "include_comments", False):
+        comments = comments_from_topic_api(topic)
+        if getattr(args, "fetch_full_comments", False):
+            comments = fetch_topic_comments_api(cdp, topic_id, args) or comments
+    topic_content = content_from_topic_api(topic, source, args, comments=comments)
+    article_url = topic_content.get("articleUrl") or ""
+    if article_url:
+        try:
+            article_content = collect_article_content(cdp, article_url, topic_content.get("title") or source.get("title") or "", args)
+            attach_comments_to_content(article_content, comments or [], bool(getattr(args, "include_comments", False)))
+            article_content["shortUrl"] = ""
+            article_content["topicUrl"] = topic_content.get("topicUrl") or f"https://wx.zsxq.com/topic/{topic_id}"
+            article_content["sourceText"] = source.get("title") or topic_content.get("title") or topic_id
+            article_content["tocKey"] = source.get("key") or ""
+            article_content["tocGroup"] = source.get("groupTitle") or ""
+            article_content["tocTitle"] = source.get("title") or topic_content.get("title") or ""
+            return article_content
+        except (ExportStopped, SkipDocument):
+            raise
+        except Exception as exc:
+            emit(args, f"知识星球文章页读取失败，保留主题摘要：{source.get('title') or topic_id} ({exc})", event="log.message", level="warn")
+    return topic_content
+
 
 
 def current_page_has_video(cdp: CDPClient) -> dict[str, Any]:
@@ -1440,6 +2046,25 @@ def is_zsxq_page_url(url: str) -> bool:
     return False
 
 
+def is_zsxq_article_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url or "")
+    return parsed.scheme in {"http", "https"} and parsed.netloc.lower() == "articles.zsxq.com"
+
+
+def should_follow_zsxq_link(link: dict[str, Any], args: argparse.Namespace | None = None) -> bool:
+    scope = str(getattr(args, "follow_link_scope", "all") if args else "all").strip() or "all"
+    href = str(link.get("href") or "").strip()
+    if scope == "none":
+        return False
+    if scope == "articles":
+        return is_zsxq_article_url(href)
+    return True
+
+
+def filter_follow_zsxq_links(links: list[dict[str, Any]], args: argparse.Namespace | None = None) -> list[dict[str, Any]]:
+    return [link for link in unique_zsxq_links(links) if should_follow_zsxq_link(link, args)]
+
+
 def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace | None = None) -> dict[str, Any]:
     href = link["href"]
     if not is_zsxq_page_url(href):
@@ -1459,6 +2084,31 @@ def resolve_link(cdp: CDPClient, link: dict[str, str], args: argparse.Namespace 
             pause_for_rate_limit(args, href, attempt, retries)
             continue
         topic_url = info.get("href") or href
+        topic_id = topic_id_from_url(topic_url)
+        if topic_id:
+            api_source = {
+                "key": link.get("href") or topic_url,
+                "title": link.get("text") or "知识星球帖子",
+                "topicId": topic_id,
+                "topicUid": topic_id,
+                "topicUrl": topic_url,
+                "groupTitle": "",
+            }
+            try:
+                content = resolve_toc_item_api(cdp, api_source, args)
+                content["shortUrl"] = href
+                content["topicUrl"] = content.get("topicUrl") or topic_url
+                content["sourceText"] = link.get("text") or href
+                return content
+            except (ExportStopped, SkipDocument):
+                raise
+            except Exception as exc:
+                emit(
+                    args,
+                    f"知识星球 topic API 读取失败，改用页面兜底：{link.get('text') or href} ({exc})",
+                    event="log.message",
+                    level="warn",
+                )
         article_url = info.get("article") or (topic_url if "articles.zsxq.com" in topic_url else "")
         topic_comments = collect_current_comments(cdp, args) if article_url else []
         if article_url:
@@ -1532,14 +2182,48 @@ def guess_extension(url: str, content_type: str | None) -> str:
 
 
 def download_image(url: str, dest_dir: Path, timeout: int) -> Path:
-    import hashlib
-
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://wx.zsxq.com/"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read()
         ext = guess_extension(url, response.headers.get("Content-Type"))
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / (hashlib.sha1(url.encode("utf-8")).hexdigest()[:12] + "." + ext)
+    if not target.exists():
+        target.write_bytes(data)
+    return target
+
+
+def guess_file_extension(url: str, content_type: str | None) -> str:
+    path = urllib.parse.urlparse(url).path.lower()
+    match = re.search(r"\.([a-z0-9]{2,8})$", path)
+    if match:
+        return match.group(1)
+    content_type = (content_type or "").lower()
+    if "pdf" in content_type:
+        return "pdf"
+    if "zip" in content_type:
+        return "zip"
+    if "word" in content_type or "docx" in content_type:
+        return "docx"
+    if "excel" in content_type or "spreadsheet" in content_type or "xlsx" in content_type:
+        return "xlsx"
+    if "powerpoint" in content_type or "presentation" in content_type or "pptx" in content_type:
+        return "pptx"
+    if "text/" in content_type:
+        return "txt"
+    return "bin"
+
+
+def download_file(url: str, filename: str, dest_dir: Path, timeout: int) -> Path:
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://wx.zsxq.com/"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = response.read()
+        ext = guess_file_extension(url, response.headers.get("Content-Type"))
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = sanitize_filename(filename or Path(urllib.parse.urlparse(url).path).name or "知识星球附件")
+    if "." not in safe_name:
+        safe_name = f"{safe_name}.{ext}"
+    target = dest_dir / f"{hashlib.sha1(url.encode('utf-8')).hexdigest()[:12]}-{safe_name}"
     if not target.exists():
         target.write_bytes(data)
     return target
@@ -1567,6 +2251,29 @@ def localize_images(
             failures.append({"url": url, "error": str(exc)})
             if not keep_remote:
                 markdown = markdown.replace(url, "")
+    return markdown, success, failures
+
+
+def localize_files(
+    markdown: str,
+    files: list[dict[str, str]],
+    md_path: Path,
+    timeout: int,
+    args: argparse.Namespace | None = None,
+) -> tuple[str, int, list[dict[str, str]]]:
+    success = 0
+    failures: list[dict[str, str]] = []
+    for file_item in files:
+        check_stopped(args)
+        url = str(file_item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        try:
+            target = download_file(url, file_item.get("name") or "知识星球附件", md_path.parent / "assets" / "files", timeout)
+            markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
+            success += 1
+        except Exception as exc:
+            failures.append({"url": url, "name": file_item.get("name", ""), "error": str(exc)})
     return markdown, success, failures
 
 
@@ -1845,10 +2552,23 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     args.folder_link_threshold = max(0, int(getattr(args, "folder_link_threshold", 9) or 0))
     args.skip_video_topics = bool(getattr(args, "skip_video_topics", True))
     args.include_comments = bool(getattr(args, "include_comments", False))
+    args.fetch_full_comments = bool(getattr(args, "fetch_full_comments", False))
+    args.download_files = bool(getattr(args, "download_files", False))
     args.request_delay = max(0.0, float(getattr(args, "request_delay", 1.5) or 0))
     args.request_jitter = max(0.0, float(getattr(args, "request_jitter", 0.6) or 0))
+    args.comment_request_delay = max(0.0, float(getattr(args, "comment_request_delay", 3.0) or 0))
+    args.comment_request_jitter = max(0.0, float(getattr(args, "comment_request_jitter", 2.0) or 0))
     args.rate_limit_pause = max(5.0, float(getattr(args, "rate_limit_pause", 90) or 90))
     args.rate_limit_retries = max(0, int(getattr(args, "rate_limit_retries", 5) or 0))
+    args.max_depth = max(0, int(getattr(args, "max_depth", 2) or 0))
+    args.group_page_delay = max(0.0, float(getattr(args, "group_page_delay", 4.0) or 0))
+    args.group_page_jitter = max(0.0, float(getattr(args, "group_page_jitter", 4.0) or 0))
+    args.long_sleep_after = max(0, int(getattr(args, "long_sleep_after", 25) or 0))
+    args.long_sleep_every = max(0, int(getattr(args, "long_sleep_every", 12) or 0))
+    args.long_sleep_min = max(0.0, float(getattr(args, "long_sleep_min", 120) or 0))
+    args.long_sleep_max = max(args.long_sleep_min, float(getattr(args, "long_sleep_max", 300) or 0))
+    if getattr(args, "follow_link_scope", "all") not in {"all", "articles", "none"}:
+        args.follow_link_scope = "all"
     cdp, chrome_proc = connect_browser(args, entry_url)
     try:
         auth_file = auth_path_from_args(args)
@@ -1866,16 +2586,48 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         toc_items: list[dict[str, Any]] = []
         toc_mode = getattr(args, "toc_mode", "auto")
         use_toc = False
-        if toc_mode != "off" and is_column_entry_url(entry_url):
+        use_group_topics = False
+        group_id = ""
+        group_scope = ""
+        group_page_size = DEFAULT_GROUP_BATCH_SIZE
+        group_max_pages = 0
+        if toc_mode != "off" and (is_column_entry_url(entry_url) or is_group_entry_url(entry_url)):
             try:
-                toc = collect_toc(cdp, entry_url, args)
-                toc_items = select_toc_items(toc, args)
-                use_toc = bool(toc_items)
-                emit(
-                    args,
-                    f"目录读取完成：groups={len(toc.get('groups') or [])} total_topics={toc.get('totalTopics', 0)} selected={len(toc_items)}",
-                )
-                if toc_mode == "toc" and not toc_items:
+                use_group_topics = is_group_entry_url(entry_url)
+                if use_group_topics:
+                    args.limit = normalize_group_limit(args)
+                    group_id = group_id_from_url(entry_url)
+                    if not group_id:
+                        raise ExportError("无法从知识星球 group URL 中识别星球 ID")
+                    group_scope = group_scope_from_args(entry_url, args)
+                    group_page_size = max(1, min(100, int(getattr(args, "group_page_size", DEFAULT_GROUP_BATCH_SIZE) or DEFAULT_GROUP_BATCH_SIZE)))
+                    group_max_pages = max(1, int(getattr(args, "group_max_pages", 200) or 200))
+                    navigate_with_retry(cdp, entry_url, args)
+                    toc = {
+                        "href": entry_url,
+                        "title": f"知识星球 {group_scope_title(group_scope)}",
+                        "groupId": group_id,
+                        "scope": group_scope,
+                        "pageCount": 0,
+                        "totalTopics": 0,
+                        "groups": [],
+                    }
+                    use_toc = True
+                    emit(
+                        args,
+                        f"知识星球 Group 将按批次导出：总数最多 {args.limit} 条，每批最多读取 {group_page_size} 条。",
+                        event="log.message",
+                        level="info",
+                    )
+                else:
+                    toc = collect_toc(cdp, entry_url, args)
+                    toc_items = select_toc_items(toc, args)
+                    use_toc = bool(toc_items)
+                    emit(
+                        args,
+                        f"目录读取完成：groups={len(toc.get('groups') or [])} total_topics={toc.get('totalTopics', 0)} selected={len(toc_items)}",
+                    )
+                if toc_mode == "toc" and not use_group_topics and not toc_items:
                     raise ExportError("目录已读取，但没有匹配的导出条目。")
             except Exception as exc:
                 if toc_mode == "toc":
@@ -1884,8 +2636,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 toc = {}
                 toc_items = []
                 use_toc = False
+                use_group_topics = False
 
-        if use_toc and not args.include_overview:
+        include_overview = bool(args.include_overview) and not use_group_topics
+        if use_toc and not include_overview:
             entry = {
                 "title": toc.get("title") or "知识星球导出",
                 "url": toc.get("href") or entry_url,
@@ -1896,7 +2650,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             links: list[dict[str, str]] = []
         else:
             entry = collect_entry_links(cdp, entry_url, args.link_pattern, args)
-            links = entry.get("zsxqLinks") or []
+            links = filter_follow_zsxq_links(entry.get("zsxqLinks") or [], args)
             if args.limit and args.limit > 0 and not use_toc:
                 links = links[: args.limit]
         existing = scan_exported_docs(output)
@@ -1904,6 +2658,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         failures: list[dict[str, str]] = []
         image_failures: list[dict[str, Any]] = []
         image_success = 0
+        file_failures: list[dict[str, Any]] = []
+        file_success = 0
         exported = 0
         skipped = 0
         skipped_video = 0
@@ -1913,18 +2669,21 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         folderized = 0
         deepened_existing = 0
         queued_from_existing = 0
+        long_sleep_count = 0
+        long_sleep_seconds = 0.0
         started_at = time.time()
         root_sequence = 0
         folder_sequences: dict[str, int] = {}
         output_key = str(output.resolve()).lower()
-        source_count = len(toc_items) if use_toc else len(links)
+        source_count = args.limit if use_group_topics else (len(toc_items) if use_toc else len(links))
+        source_mode = "group" if use_group_topics else ("toc" if use_toc else "links")
         emit(
             args,
             f"开始导出知识星球内容：共 {source_count} 个来源条目。",
             event="task.started",
             totals={"documents": source_count},
             output=str(output),
-            sourceMode="toc" if use_toc else "links",
+            sourceMode=source_mode,
             entryUrl=entry_url,
         )
 
@@ -1959,7 +2718,31 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             folder_path.mkdir(parents=True, exist_ok=True)
             return folder_path
 
-        if args.include_overview:
+        def maybe_long_sleep_after_export() -> None:
+            nonlocal long_sleep_count, long_sleep_seconds
+            has_more_work = bool(queue_links) or (use_group_topics and not group_exhausted)
+            if not has_more_work or not should_long_sleep_after_export(args, exported):
+                return
+            pause = random.uniform(args.long_sleep_min, args.long_sleep_max)
+            long_sleep_count += 1
+            long_sleep_seconds += pause
+            emit(
+                args,
+                f"大批量保护：已导出 {exported} 篇，长休眠 {format_duration(pause)} 后继续。",
+                event="task.paused",
+                level="info",
+                stats={"exportedDocs": exported, "longSleepSeconds": round(pause, 1), "longSleepCount": long_sleep_count},
+            )
+            wait_with_stop(args, pause)
+            emit(
+                args,
+                f"长休眠结束，继续导出：已完成 {exported} 篇。",
+                event="task.resumed",
+                level="info",
+                stats={"exportedDocs": exported, "longSleepCount": long_sleep_count},
+            )
+
+        if include_overview:
             root_sequence = max(root_sequence, 1)
             overview_path = output / "01-专栏正文.md"
             overview_key = str(entry.get("url") or entry_url)
@@ -2031,6 +2814,79 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         seen_urls: set[str] = set()
         queued_urls: set[str] = set()
         seen_toc_keys: set[str] = set()
+        group_seen_topic_ids: set[str] = set()
+        group_end_time = ""
+        group_page_count = 0
+        group_fetched_count = 0
+        group_exhausted = not use_group_topics
+
+        def enqueue_next_group_batch() -> int:
+            nonlocal group_end_time, group_page_count, group_fetched_count, group_exhausted, toc
+            if not use_group_topics or group_exhausted:
+                return 0
+            if group_fetched_count >= args.limit:
+                group_exhausted = True
+                return 0
+            if group_page_count >= group_max_pages:
+                group_exhausted = True
+                emit(
+                    args,
+                    f"知识星球 Group 已达到批次页数上限：{group_max_pages} 页。本次先停止继续读取。",
+                    event="log.message",
+                    level="warn",
+                )
+                return 0
+            if group_page_count > 0:
+                pause_between_group_pages(args, group_page_count, group_fetched_count)
+
+            result = fetch_group_topics_page(cdp, group_id, group_scope, group_end_time, group_page_size, args)
+            if not result.get("ok"):
+                raise ExportError(result.get("text") or f"知识星球 group 主题列表读取失败：{group_id}")
+            batch = [topic for topic in result.get("topics") or [] if isinstance(topic, dict)]
+            group_page_count += 1
+            added = 0
+            for topic in batch:
+                topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or "").strip()
+                if topic_id and topic_id in group_seen_topic_ids:
+                    continue
+                if topic_id:
+                    group_seen_topic_ids.add(topic_id)
+                item = group_topic_to_item(topic, group_scope, group_fetched_count, include_raw=True)
+                queue_links.append((dict(item, kind="toc", outputDir=str(output)), 1))
+                group_fetched_count += 1
+                added += 1
+                if group_fetched_count >= args.limit:
+                    break
+
+            toc["pageCount"] = group_page_count
+            toc["totalTopics"] = group_fetched_count
+            toc["groups"] = [
+                {
+                    "key": f"group:{group_scope}",
+                    "groupIndex": 0,
+                    "groupTitle": group_scope_title(group_scope),
+                    "expectedCount": args.limit,
+                    "topicCount": group_fetched_count,
+                    "topics": [],
+                }
+            ]
+            emit(
+                args,
+                f"知识星球 Group 批次读取：page={group_page_count} batch={len(batch)} queued={added} total={group_fetched_count}/{args.limit} scope={group_scope}",
+                event="task.progress",
+                progress={"current": group_fetched_count, "total": args.limit},
+                stats={"groupPage": group_page_count, "groupBatchTopics": len(batch), "groupQueuedTopics": added},
+            )
+
+            if group_fetched_count >= args.limit or not batch or added == 0 or len(batch) < group_page_size:
+                group_exhausted = True
+                return added
+            last_time = str(batch[-1].get("create_time") or "").strip()
+            if not last_time or last_time == group_end_time:
+                group_exhausted = True
+                return added
+            group_end_time = previous_zsxq_end_time(last_time)
+            return added
 
         def child_output_dir_for_existing(md_path: Path, child_count: int) -> Path:
             if md_path.name.startswith("00-"):
@@ -2044,7 +2900,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         def enqueue_children_from_existing(md_path: Path, source: dict[str, Any], depth: int) -> int:
             if depth >= args.max_depth:
                 return 0
-            children = extract_remote_zsxq_links_from_markdown(md_path)
+            children = filter_follow_zsxq_links(extract_remote_zsxq_links_from_markdown(md_path), args)
             if not children:
                 return 0
             source_keys = canonical_url_keys(source.get("href"), source.get("key")) | source_keys_from_markdown(md_path)
@@ -2065,7 +2921,9 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 emit(args, f"增量补深入：{md_path.name} 发现 {added} 个下一层链接")
             return added
 
-        if use_toc:
+        if use_group_topics:
+            enqueue_next_group_batch()
+        elif use_toc:
             for toc_item in toc_items:
                 toc_key = str(toc_item.get("key") or "")
                 if not toc_key or toc_key in seen_toc_keys:
@@ -2078,7 +2936,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     continue
                 mark_link_seen(link, queued_urls)
                 queue_links.append((dict(link, kind="link", outputDir=str(output)), 1))
-        while queue_links:
+        while queue_links or (use_group_topics and not group_exhausted):
+            if not queue_links and use_group_topics and not group_exhausted:
+                enqueue_next_group_batch()
+                if not queue_links:
+                    continue
             if stop_requested(args):
                 stopped = True
                 emit(args, "收到停止请求，正在结束并写入已完成的导出结果。", event="task.stopped", level="warn")
@@ -2146,7 +3008,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 title = item.get("title") or link.get("text") or "知识星球文档"
                 current_output = Path(link.get("outputDir") or output)
                 raw_markdown = item.get("markdown") or f"# {title}\n"
-                children = unique_zsxq_links((item.get("zsxqLinks") or []) + markdown_links(raw_markdown))
+                children = filter_follow_zsxq_links((item.get("zsxqLinks") or []) + markdown_links(raw_markdown), args)
                 should_folderize = (
                     depth < args.max_depth
                     and args.folder_link_threshold > 0
@@ -2193,6 +3055,29 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                             resource={"type": "image", "url": failure.get("url", "")},
                             error={"message": failure.get("error", "")},
                         )
+                file_count = 0
+                file_errors: list[dict[str, str]] = []
+                if args.download_files:
+                    markdown, file_count, file_errors = localize_files(
+                        markdown,
+                        item.get("files") or [],
+                        md_path,
+                        args.download_timeout,
+                        args,
+                    )
+                    file_success += file_count
+                    if file_errors:
+                        file_failures.append({"document": title, "path": str(md_path), "failures": file_errors})
+                        for failure in file_errors:
+                            emit(
+                                args,
+                                f"知识星球附件下载失败：{title}：{failure.get('error') or failure.get('url') or ''}",
+                                event="resource.download.failed",
+                                level="error",
+                                doc={"title": title, "path": str(md_path), "source": href},
+                                resource={"type": "attachment", "url": failure.get("url", ""), "name": failure.get("name", "")},
+                                error={"message": failure.get("error", "")},
+                            )
                 md_path.write_text(markdown, encoding="utf-8")
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
@@ -2202,7 +3087,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     f"知识星球文档导出完成：{title}",
                     event="document.export.completed",
                     doc={"title": title, "path": str(md_path), "source": href},
-                    stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors), "children": len(children)},
+                    stats={
+                        "imageSuccessInDoc": count,
+                        "imageFailuresInDoc": len(img_errors),
+                        "attachmentSuccessInDoc": file_count,
+                        "attachmentFailuresInDoc": len(file_errors),
+                        "children": len(children),
+                    },
                 )
 
                 if depth < args.max_depth:
@@ -2212,9 +3103,10 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         if child_href and not link_seen(child_link, seen_urls) and not link_seen(child_link, queued_urls):
                             mark_link_seen(child_link, queued_urls)
                             queue_links.append((dict(child_link, kind="link", outputDir=str(child_output)), depth + 1))
+                maybe_long_sleep_after_export()
             except ExportStopped:
                 stopped = True
-                emit(args, "收到停止请求，当前文档未写入，正在结束。", event="task.stopped", level="warn")
+                emit(args, "收到停止请求，正在结束并写入已完成的导出结果。", event="task.stopped", level="warn")
                 break
             except SkipDocument as exc:
                 skipped += 1
@@ -2240,7 +3132,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 )
 
             done = exported + skipped + len(failures)
-            total_hint = len(toc_items) if use_toc else len(links)
+            total_hint = args.limit if use_group_topics else (len(toc_items) if use_toc else len(links))
             if args.progress_every and (done % args.progress_every == 0 or done == total_hint):
                 elapsed = max(0.1, time.time() - started_at)
                 rate = done / elapsed
@@ -2260,6 +3152,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         "failureCount": len(failures),
                         "imageSuccess": image_success,
                         "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+                        "attachmentSuccess": file_success,
+                        "attachmentFailureCount": sum(len(item["failures"]) for item in file_failures),
                     },
                 )
 
@@ -2270,34 +3164,55 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "exportMode": "incremental" if args.incremental else "full",
             "entryUrl": entry_url,
             "output": str(output),
-            "sourceMode": "toc" if use_toc else "links",
+            "sourceMode": source_mode,
+            "groupId": toc.get("groupId", ""),
+            "groupScope": toc.get("scope", ""),
+            "groupPageCount": group_page_count if use_group_topics else toc.get("pageCount", 0),
             "tocGroupCount": len(toc.get("groups") or []),
-            "tocTopicCount": toc.get("totalTopics", 0),
-            "selectedTocCount": len(toc_items) if use_toc else 0,
-            "sourceLinkCount": len(toc_items) if use_toc else len(entry.get("zsxqLinks") or []),
-            "selectedLinkCount": len(toc_items) if use_toc else len(links),
+            "tocTopicCount": group_fetched_count if use_group_topics else toc.get("totalTopics", 0),
+            "selectedTocCount": group_fetched_count if use_group_topics else (len(toc_items) if use_toc else 0),
+            "sourceLinkCount": group_fetched_count if use_group_topics else (len(toc_items) if use_toc else len(entry.get("zsxqLinks") or [])),
+            "selectedLinkCount": source_count if use_group_topics else (len(toc_items) if use_toc else len(links)),
+            "totalDocs": exported + skipped + len(failures),
             "exportedDocs": exported,
             "skippedDocs": skipped,
             "skippedVideoDocs": skipped_video,
             "includeComments": args.include_comments,
+            "fetchFullComments": args.fetch_full_comments,
+            "downloadFiles": args.download_files,
             "exportedComments": total_comments,
             "commentsUpdatedExistingDocs": comments_updated_existing,
             "deepenedExistingDocs": deepened_existing,
             "queuedFromExistingDocs": queued_from_existing,
             "folderizedDocs": folderized,
             "folderLinkThreshold": args.folder_link_threshold,
+            "maxDepth": args.max_depth,
+            "followLinkScope": args.follow_link_scope,
+            "longSleepAfter": args.long_sleep_after,
+            "longSleepEvery": args.long_sleep_every,
+            "longSleepMinSeconds": args.long_sleep_min,
+            "longSleepMaxSeconds": args.long_sleep_max,
+            "longSleepCount": long_sleep_count,
+            "longSleepSeconds": round(long_sleep_seconds, 1),
             "stopped": stopped,
             "imageSuccess": image_success,
             "imageFailureCount": sum(len(item["failures"]) for item in image_failures),
+            "attachmentSuccess": file_success,
+            "attachmentFailureCount": sum(len(item["failures"]) for item in file_failures),
             "localLinkRewriteFiles": local_link_rewrite_count,
             "requestCount": int(getattr(args, "_request_count", 0) or 0),
             "rateLimitEvents": int(getattr(args, "_rate_limit_events", 0) or 0),
             "requestDelaySeconds": float(getattr(args, "request_delay", 0) or 0),
             "requestJitterSeconds": float(getattr(args, "request_jitter", 0) or 0),
+            "commentRequestDelaySeconds": float(getattr(args, "comment_request_delay", 0) or 0),
+            "commentRequestJitterSeconds": float(getattr(args, "comment_request_jitter", 0) or 0),
+            "groupPageDelaySeconds": float(getattr(args, "group_page_delay", 0) or 0),
+            "groupPageJitterSeconds": float(getattr(args, "group_page_jitter", 0) or 0),
             "rateLimitPauseSeconds": float(getattr(args, "rate_limit_pause", 0) or 0),
             "elapsedSeconds": round(time.time() - started_at, 1),
             "failures": failures,
             "imageFailures": image_failures,
+            "attachmentFailures": file_failures,
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         report_path = output / "00-导出报告.json"
@@ -2338,7 +3253,7 @@ def scan_toc_entry(args: argparse.Namespace) -> dict[str, Any]:
         emit(args, "开始读取知识星球目录。")
         if args.wait_login:
             input("Press Enter after the ZSXQ page is logged in and visible...")
-        toc = collect_toc(cdp, entry_url, args)
+        toc = collect_group_toc(cdp, entry_url, args) if is_group_entry_url(entry_url) else collect_toc(cdp, entry_url, args)
         selected = select_toc_items(toc, args)
         toc["selectedTopics"] = len(selected)
         return toc
@@ -2821,24 +3736,43 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--toc-group-pattern", help="Regex filter for ZSXQ directory group names")
     parser.add_argument("--toc-title-pattern", help="Regex filter for ZSXQ directory article titles")
     parser.add_argument("--toc-key", action="append", dest="selected_toc_keys", help="Export one specific directory key, repeatable, for example toc:1:0")
+    parser.add_argument("--group-scope", choices=("auto", "all", "digests", "by_owner"), default="auto", help="For /group/ URLs: export all topics, digests, or owner topics")
+    parser.add_argument("--group-page-size", type=int, default=DEFAULT_GROUP_BATCH_SIZE, help="Topics fetched per group API batch")
+    parser.add_argument("--group-max-pages", type=int, default=200, help="Safety limit for group topic pagination")
+    parser.add_argument("--group-page-delay", type=float, default=4.0, help="Extra seconds to wait between ZSXQ group topic list pages")
+    parser.add_argument("--group-page-jitter", type=float, default=4.0, help="Extra random seconds added to --group-page-delay")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of source links to export. 0 means no limit")
     parser.add_argument("--max-depth", type=int, default=2, help="Recursion depth for ZSXQ links inside exported pages")
+    parser.add_argument(
+        "--follow-link-scope",
+        choices=("all", "articles", "none"),
+        default="all",
+        help="Which ZSXQ links to follow recursively: all links, articles.zsxq.com only, or none",
+    )
     parser.add_argument(
         "--folder-link-threshold",
         type=int,
         default=9,
         help="If an exported page has at least this many ZSXQ links, place linked pages in a same-name folder. 0 disables this.",
     )
-    parser.add_argument("--request-delay", type=float, default=1.5, help="Seconds to wait before each ZSXQ navigation/API request")
-    parser.add_argument("--request-jitter", type=float, default=0.6, help="Extra random seconds added to request delay")
+    parser.add_argument("--request-delay", type=float, default=1.8, help="Seconds to wait before each ZSXQ navigation/API request")
+    parser.add_argument("--request-jitter", type=float, default=1.6, help="Extra random seconds added to request delay")
     parser.add_argument("--rate-limit-pause", type=float, default=90, help="Seconds to pause after Too Many Requests before retrying")
     parser.add_argument("--rate-limit-retries", type=int, default=5, help="Retries for the same URL/API call after Too Many Requests")
+    parser.add_argument("--long-sleep-after", type=int, default=25, help="Enable long sleep only after this many successfully exported docs. 0 disables it")
+    parser.add_argument("--long-sleep-every", type=int, default=12, help="After --long-sleep-after, sleep whenever exported docs is a multiple of this value. 0 disables it")
+    parser.add_argument("--long-sleep-min", type=float, default=120, help="Minimum long sleep seconds for large ZSXQ exports")
+    parser.add_argument("--long-sleep-max", type=float, default=300, help="Maximum long sleep seconds for large ZSXQ exports")
     parser.add_argument("--include-video-topics", dest="skip_video_topics", action="store_false", help="Export video-only ZSXQ topic pages instead of skipping them")
     parser.add_argument("--skip-video-topics", dest="skip_video_topics", action="store_true", help="Skip video-only ZSXQ topic pages")
     parser.set_defaults(skip_video_topics=True)
     parser.add_argument("--include-comments", action="store_true", help="Append visible ZSXQ comments to exported Markdown")
     parser.add_argument("--no-comments", dest="include_comments", action="store_false", help="Do not export ZSXQ comments")
     parser.set_defaults(include_comments=False)
+    parser.add_argument("--fetch-full-comments", action="store_true", help="Fetch the full comments API for each topic. Slower and easier to hit ZSXQ rate limits")
+    parser.add_argument("--comment-request-delay", type=float, default=3.0, help="Minimum seconds to wait before each full comments API request")
+    parser.add_argument("--comment-request-jitter", type=float, default=2.0, help="Extra random seconds added to full comments API request delay")
+    parser.add_argument("--download-files", action="store_true", help="Download ZSXQ post attachments and rewrite Markdown links to local files")
     parser.add_argument("--download-timeout", type=int, default=45, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=10, help="Print progress after N documents")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")

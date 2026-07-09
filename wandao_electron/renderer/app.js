@@ -88,7 +88,7 @@ const PLATFORM_META = {
   },
   zsxq: {
     name: '知识星球',
-    description: '支持项目/专栏内容导出为 Markdown，适合知识库备份。',
+    description: '支持 Group 帖子按数量导出，也支持专栏目录按章节导出。',
     tags: ['导出']
   },
   yinxiang: {
@@ -2734,6 +2734,12 @@ async function handleLogin(toolId) {
     alert('请先填写 URL');
     return;
   }
+  try {
+    validateZsxqUrlForTool(toolId, url);
+  } catch (error) {
+    alert(formatError(error));
+    return;
+  }
 
   const args = config.noUrl ? ['--login'] : [config.urlParam, url, '--login'];
   if (!confirmProviderExecution(config)) return;
@@ -2745,7 +2751,9 @@ async function handleLogin(toolId) {
   log('请在浏览器中完成登录，登录成功并能看到目标页面后，回到工具点击“我已完成登录，保存凭证”。', 'info');
 
   try {
-    const result = await window.electronAPI.runPythonCommand(config.script, args);
+    const result = await window.electronAPI.runPythonCommand(config.script, args, {
+      providerId: toolId
+    });
     if (result.success) {
       log('登录成功', 'success');
       finishProgress(true, '登录凭证已保存');
@@ -3594,6 +3602,7 @@ function buildExportArgs(toolId, options = {}) {
   if (!config.noUrl && !url) {
     throw new Error('请先填写 URL');
   }
+  validateZsxqUrlForTool(toolId, url);
 
   if (toolId === 'yuque-import') {
     return buildYuqueImportArgs(options);
@@ -3629,13 +3638,38 @@ function buildExportArgs(toolId, options = {}) {
     args.push('--progress-every', '1');
   }
 
-  if (toolId === 'zsxq') {
-    const maxDepth = document.getElementById('zsxq-max-depth')?.value;
+  if (isZsxqProvider(toolId)) {
+    const maxDepth = document.getElementById(`${prefix}-max-depth`)?.value;
     if (maxDepth) args.push('--max-depth', maxDepth);
 
-    const includeComments = document.getElementById('zsxq-include-comments');
+    const followLinkScope = document.getElementById(`${prefix}-follow-link-scope`)?.value;
+    if (followLinkScope) args.push('--follow-link-scope', followLinkScope);
+
+    const groupScope = document.getElementById(`${prefix}-group-scope`)?.value;
+    if (groupScope) args.push('--group-scope', groupScope);
+
+    const limitInput = document.getElementById(`${prefix}-limit`)?.value;
+    if (!forScan && toolId === 'zsxq-group') {
+      const limit = Number.parseInt(limitInput || '50', 10);
+      if (!Number.isFinite(limit) || limit < 1) {
+        throw new Error('知识星球 Group 单次导出数量至少为 1 条。');
+      }
+      if (limit > 500) {
+        throw new Error('知识星球 Group 单次最多导出 500 条。大星球请分批导出，避免触发风控。');
+      }
+      args.push('--limit', String(limit));
+    } else if (!forScan && limitInput !== undefined && limitInput !== '') {
+      args.push('--limit', limitInput);
+    }
+
+    const includeComments = document.getElementById(`${prefix}-include-comments`);
     if (!forScan && includeComments && includeComments.checked) {
       args.push('--include-comments');
+    }
+
+    const downloadFiles = document.getElementById(`${prefix}-download-files`);
+    if (!forScan && downloadFiles && downloadFiles.checked) {
+      args.push('--download-files');
     }
   }
 
@@ -3693,9 +3727,9 @@ function normalizeTocNodes(toolId, data) {
     if (nodes.length) return nodes;
   }
   const nodes = [];
-  if (toolId === 'zsxq') {
+  if (toolId === 'zsxq-column') {
     (data.groups || []).forEach((group, groupIndex) => {
-      const groupId = `zsxq-group:${group.groupIndex ?? groupIndex}`;
+      const groupId = `zsxq-column-group:${group.groupIndex ?? groupIndex}`;
       nodes.push({
         nodeId: groupId,
         exportId: '',
@@ -3706,7 +3740,7 @@ function normalizeTocNodes(toolId, data) {
       (group.topics || []).forEach((topic, topicIndex) => {
         const key = String(topic.key || `toc:${group.groupIndex ?? groupIndex}:${topic.topicIndex ?? topicIndex}`);
         nodes.push({
-          nodeId: `zsxq:${key}`,
+          nodeId: `zsxq-column:${key}`,
           exportId: key,
           title: topic.title || `未命名文章 ${topicIndex + 1}`,
           parentNodeId: groupId,
@@ -3917,6 +3951,20 @@ function toggleTocNode(toolId, nodeId) {
   renderToc(toolId);
 }
 
+function isZsxqProvider(toolId) {
+  return toolId === 'zsxq-group' || toolId === 'zsxq-column';
+}
+
+function validateZsxqUrlForTool(toolId, url) {
+  const text = String(url || '');
+  if (toolId === 'zsxq-group' && /\/columns\//.test(text)) {
+    throw new Error('这是知识星球专栏 URL，请切换到“知识星球专栏导出”。');
+  }
+  if (toolId === 'zsxq-column' && !/\/columns\//.test(text)) {
+    throw new Error('这是知识星球 Group/帖子 URL，请切换到“知识星球 Group 帖子导出”。');
+  }
+}
+
 function renderToc(toolId) {
   const state = tocStates[toolId];
   const list = document.getElementById(`${toolId}-toc-list`);
@@ -3957,7 +4005,7 @@ function selectedTocArgs(toolId) {
     throw new Error('目录已读取，但没有选择任何文档。请至少勾选一篇，或重新读取目录。');
   }
   const args = [];
-  if (toolId === 'zsxq') {
+  if (toolId === 'zsxq-column') {
     args.push('--toc-mode', 'toc');
     selected.forEach((id) => args.push('--toc-key', id));
   } else if (TOOLS[toolId]?.sourceKind || TOOLS[toolId]?.toc?.selectionArg) {

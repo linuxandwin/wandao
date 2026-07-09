@@ -87,18 +87,32 @@
     </div>
   </div>
 
-  <template id="template-zsxq">
+  <template id="template-zsxq-group">
     <div class="tool-panel">
       <section class="form-section">
         <div class="form-group">
-          <label for="zsxq-url">知识星球入口 URL <span class="required">*</span></label>
-          <input type="text" id="zsxq-url" placeholder="https://wx.zsxq.com/columns/...">
+          <label for="zsxq-group-url">知识星球 Group URL <span class="required">*</span></label>
+          <input type="text" id="zsxq-group-url" placeholder="https://wx.zsxq.com/group/...">
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="zsxq-group-limit">导出最近多少条</label>
+            <input type="number" id="zsxq-group-limit" value="50" min="1" max="500" step="1">
+          </div>
+          <div class="form-group flex-1">
+            <label for="zsxq-group-group-scope">帖子范围</label>
+            <select id="zsxq-group-group-scope">
+              <option value="all">全部主题</option>
+              <option value="digests">精华主题</option>
+              <option value="by_owner">只看星主</option>
+            </select>
+          </div>
         </div>
         <div class="form-group">
-          <label for="zsxq-output">输出目录</label>
+          <label for="zsxq-group-output">输出目录</label>
           <div class="input-with-button">
-            <input type="text" id="zsxq-output" placeholder="留空使用默认 exports/zsxq">
-            <button class="btn-secondary" id="zsxq-browse-output">浏览</button>
+            <input type="text" id="zsxq-group-output" placeholder="留空使用默认 exports/zsxq-group">
+            <button class="btn-secondary" id="zsxq-group-browse-output">浏览</button>
           </div>
         </div>
         <details class="advanced-section">
@@ -106,35 +120,113 @@
           <div class="advanced-content">
             <div class="form-row">
               <div class="form-group flex-1">
-                <label for="zsxq-max-depth">最多进入几层 URL</label>
-                <input type="number" id="zsxq-max-depth" value="2" min="0">
+                <label for="zsxq-group-follow-link-scope">正文 URL 跟进范围</label>
+                <select id="zsxq-group-follow-link-scope">
+                  <option value="articles" selected>只跟进文章页（推荐）</option>
+                  <option value="all">跟进全部知识星球链接</option>
+                  <option value="none">不跟进正文 URL</option>
+                </select>
               </div>
               <div class="form-group flex-1">
-                <label for="zsxq-delay">请求延迟秒</label>
-                <input type="number" id="zsxq-delay" value="1.0" min="0" step="0.1">
+                <label for="zsxq-group-max-depth">URL 跟进深度</label>
+                <input type="number" id="zsxq-group-max-depth" value="1" min="0">
               </div>
               <div class="form-group flex-1">
-                <label for="zsxq-jitter">随机浮动秒</label>
-                <input type="number" id="zsxq-jitter" value="0.5" min="0" step="0.1">
+                <label for="zsxq-group-delay">请求延迟秒</label>
+                <input type="number" id="zsxq-group-delay" value="1.8" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-group-jitter">随机浮动秒</label>
+                <input type="number" id="zsxq-group-jitter" value="1.6" min="0" step="0.1">
               </div>
             </div>
             <label class="checkbox-label">
-              <input type="checkbox" id="zsxq-incremental" checked>
+              <input type="checkbox" id="zsxq-group-incremental" checked>
               <span>增量导出</span>
             </label>
             <label class="checkbox-label">
-              <input type="checkbox" id="zsxq-include-comments">
-              <span>同时导出评论区</span>
+              <input type="checkbox" id="zsxq-group-include-comments">
+              <span>导出帖子自带评论区</span>
             </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-group-download-files">
+              <span>下载帖子附件到本地</span>
+            </label>
+            <p class="helper-note">Group 是帖子流，不读取完整星球。单次最多 500 条，导出时会按批次读取：默认每批最多 60 条，导完一批再读取下一批；附件默认只保留原链接。</p>
           </div>
         </details>
       </section>
       <section class="action-section">
-        <button class="btn-primary" id="zsxq-login">登录并保存凭证</button>
-        <button class="btn-secondary login-done-button" id="zsxq-login-done" hidden>我已完成登录，保存凭证</button>
-        <button class="btn-primary" id="zsxq-export">开始导出</button>
-        <button class="btn-danger" id="zsxq-stop" disabled>停止</button>
-        <button class="btn-secondary" id="zsxq-open-dir">打开目录</button>
+        <button class="btn-primary" id="zsxq-group-login">登录并保存凭证</button>
+        <button class="btn-secondary login-done-button" id="zsxq-group-login-done" hidden>我已完成登录，保存凭证</button>
+        <button class="btn-primary" id="zsxq-group-export">开始导出</button>
+        <button class="btn-danger" id="zsxq-group-stop" disabled>停止</button>
+        <button class="btn-secondary" id="zsxq-group-open-dir">打开目录</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="template-zsxq-column">
+    <div class="tool-panel">
+      <section class="form-section">
+        <div class="form-group">
+          <label for="zsxq-column-url">知识星球专栏 URL <span class="required">*</span></label>
+          <input type="text" id="zsxq-column-url" placeholder="https://wx.zsxq.com/columns/...">
+        </div>
+        <div class="form-group">
+          <label for="zsxq-column-output">输出目录</label>
+          <div class="input-with-button">
+            <input type="text" id="zsxq-column-output" placeholder="留空使用默认 exports/zsxq-column">
+            <button class="btn-secondary" id="zsxq-column-browse-output">浏览</button>
+          </div>
+        </div>
+        <details class="advanced-section">
+          <summary>导出选项</summary>
+          <div class="advanced-content">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="zsxq-column-follow-link-scope">正文 URL 跟进范围</label>
+                <select id="zsxq-column-follow-link-scope">
+                  <option value="articles" selected>只跟进文章页（推荐）</option>
+                  <option value="all">跟进全部知识星球链接</option>
+                  <option value="none">不跟进正文 URL</option>
+                </select>
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-column-max-depth">URL 跟进深度</label>
+                <input type="number" id="zsxq-column-max-depth" value="2" min="0">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-column-delay">请求延迟秒</label>
+                <input type="number" id="zsxq-column-delay" value="1.8" min="0" step="0.1">
+              </div>
+              <div class="form-group flex-1">
+                <label for="zsxq-column-jitter">随机浮动秒</label>
+                <input type="number" id="zsxq-column-jitter" value="1.6" min="0" step="0.1">
+              </div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-column-incremental" checked>
+              <span>增量导出</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-column-include-comments">
+              <span>导出帖子自带评论区</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="zsxq-column-download-files">
+              <span>下载帖子附件到本地</span>
+            </label>
+            <p class="helper-note">专栏有章节目录。先点击“读取目录”后可勾选章节；评论默认只使用帖子数据里自带的可见评论，附件默认只保留原链接。</p>
+          </div>
+        </details>
+      </section>
+      <section class="action-section">
+        <button class="btn-primary" id="zsxq-column-login">登录并保存凭证</button>
+        <button class="btn-secondary login-done-button" id="zsxq-column-login-done" hidden>我已完成登录，保存凭证</button>
+        <button class="btn-primary" id="zsxq-column-export">开始导出</button>
+        <button class="btn-danger" id="zsxq-column-stop" disabled>停止</button>
+        <button class="btn-secondary" id="zsxq-column-open-dir">打开目录</button>
       </section>
     </div>
   </template>

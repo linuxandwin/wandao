@@ -81,6 +81,10 @@
         const current = Number(progress.current || 0);
         const total = Number(progress.total || 0);
         const statParts = [];
+        if (Number.isFinite(stats.groupPage) || Number.isFinite(stats.groupBatchTopics)) {
+          const suffix = total ? `，预计 ${total} 篇左右` : '';
+          return { type: 'info', message: `帖子列表读取：已读取 ${current || 0} 篇${suffix}` };
+        }
         if (Number.isFinite(stats.exportedDocs)) statParts.push(`导出 ${stats.exportedDocs}`);
         if (Number.isFinite(stats.importedDocs)) statParts.push(`导入 ${stats.importedDocs}`);
         if (Number.isFinite(stats.createdDocs)) statParts.push(`创建 ${stats.createdDocs}`);
@@ -94,6 +98,12 @@
           return { type: stats.failureCount ? 'warn' : 'info', message: `进度 ${current}/${total}${statParts.length ? `，${statParts.join('，')}` : ''}` };
         }
         return null;
+      }
+      if (eventName === 'document.export.failed' && type !== 'error') {
+        if (/video-topic/i.test(error || message)) {
+          return { type: 'warn', message: `已跳过视频帖：${doc || '未命名帖子'}` };
+        }
+        return { type, message: `已跳过：${doc || message || '当前条目'}${error ? `（${error}）` : ''}` };
       }
       if (eventName.endsWith('.failed') || type === 'error') {
         const subject = doc ? `${doc}：` : '';
@@ -112,7 +122,9 @@
       const total = Number(event.progress.total || 0);
       if (!current && !total) return;
       const stats = event.stats || {};
-      const detailParts = [`已处理 ${current}/${total || '?'}`];
+      const detailParts = (Number.isFinite(stats.groupPage) || Number.isFinite(stats.groupBatchTopics))
+        ? [`帖子列表读取 ${current}/${total || '?'}`]
+        : [`已处理 ${current}/${total || '?'}`];
       if (Number.isFinite(stats.exportedDocs)) detailParts.push(`导出 ${stats.exportedDocs}`);
       if (Number.isFinite(stats.importedDocs)) detailParts.push(`导入 ${stats.importedDocs}`);
       if (Number.isFinite(stats.createdDocs)) detailParts.push(`创建 ${stats.createdDocs}`);
