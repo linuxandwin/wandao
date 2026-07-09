@@ -274,9 +274,9 @@ npm run build:mac:arm64
 
 <a href="https://www.star-history.com/?repos=tllovesxs%2Fwandao&type=timeline&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&theme=dark&legend=top-left&sealed_token=FYov8ICwAHTQ9yd8BHf4G_wynvkxW-Cyn1u-3L0u8RY9cbp5rG9biTriQsVm3xPj7khQm5XFQc21HkiccNxo3OAQwnIzYbHAIgyVV8zrfDPEhtFZOAoj_g" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&legend=top-left&sealed_token=FYov8ICwAHTQ9yd8BHf4G_wynvkxW-Cyn1u-3L0u8RY9cbp5rG9biTriQsVm3xPj7khQm5XFQc21HkiccNxo3OAQwnIzYbHAIgyVV8zrfDPEhtFZOAoj_g" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tllovesxs/wandao&type=timeline&legend=top-left&sealed_token=FYov8ICwAHTQ9yd8BHf4G_wynvkxW-Cyn1u-3L0u8RY9cbp5rG9biTriQsVm3xPj7khQm5XFQc21HkiccNxo3OAQwnIzYbHAIgyVV8zrfDPEhtFZOAoj_g" />
  </picture>
 </a>
 
