@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_logging import WandaoLogger, print_text, structured_logs_enabled
 from wandao_report import finalize_report
 
@@ -2582,6 +2583,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
     add_checkpoint_args(parser)
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id, repeatable")
+    parser.add_argument("--doc-id-file", default="", help="Read selected document ids from a JSON array/object or line-based text file")
     parser.add_argument("--render-timeout", type=int, default=20, help="Seconds to wait for each document render")
     parser.add_argument("--no-api-export", dest="api_export", action="store_false", help="Disable fast edit API export and use browser-rendered DOM extraction")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
@@ -2592,7 +2594,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")
     parser.add_argument("--drop-failed-images", dest="keep_remote_images", action="store_false", help="Remove image URL when download fails")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close Chrome started by this script after export")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    extend_arg_list_from_file(args, "selected_doc_ids")
+    return args
 
 
 def main(argv: list[str]) -> int:

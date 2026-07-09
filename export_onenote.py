@@ -31,6 +31,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -764,21 +765,10 @@ def selected_pages(args: argparse.Namespace, pages: list[TocNode]) -> list[TocNo
 
 
 def load_doc_id_file(args: argparse.Namespace) -> None:
-    file_path = getattr(args, "doc_id_file", "") or ""
-    if not file_path:
-        return
-    path = Path(file_path).expanduser().resolve()
-    if not path.exists():
-        raise ExportError(f"选择文件不存在：{path}")
-    text = path.read_text(encoding="utf-8", errors="replace").strip()
-    if not text:
-        return
     try:
-        data = json.loads(text)
-        ids = data if isinstance(data, list) else data.get("docIds", [])
-    except json.JSONDecodeError:
-        ids = [line.strip() for line in text.splitlines()]
-    args.selected_doc_ids.extend(str(item).strip() for item in ids if str(item).strip())
+        extend_arg_list_from_file(args, "selected_doc_ids")
+    except (FileNotFoundError, ValueError) as exc:
+        raise ExportError(str(exc)) from exc
 
 
 def write_publish_list(items: list[tuple[TocNode, Path]], path: Path) -> None:
@@ -986,13 +976,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--request-jitter", default="0", help=argparse.SUPPRESS)
     parser.add_argument("--keep-mht", action="store_true", help="保留 OneNote 中间 MHT 文件，便于排障")
     parser.add_argument("--helper-dir", default="", help="OneNote 桥接组件缓存目录")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    load_doc_id_file(args)
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        load_doc_id_file(args)
         xml_text = load_hierarchy_xml(args)
         nodes, pages = parse_hierarchy(xml_text)
         if args.scan_toc:

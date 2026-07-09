@@ -399,6 +399,27 @@ function isInsidePath(root, candidate) {
   return right === left || right.startsWith(left + path.sep);
 }
 
+function managedFileRoots(options = {}) {
+  const roots = [app.getPath('userData')];
+  if (options.allowProjectRoot) {
+    roots.push(path.dirname(findPythonScript('import_feishu.py')));
+  }
+  return uniquePaths(roots);
+}
+
+function resolveManagedFilePath(filePath, options = {}) {
+  const raw = String(filePath || '').trim();
+  if (!raw) {
+    throw new Error('文件路径不能为空');
+  }
+  const resolved = path.resolve(expandHomePath(raw));
+  const roots = managedFileRoots(options);
+  if (!roots.some((root) => isInsidePath(root, resolved))) {
+    throw new Error('只允许访问万能导应用数据目录中的配置文件。');
+  }
+  return resolved;
+}
+
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
@@ -452,9 +473,10 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind) {
 function discoverProviderManifests() {
   const providers = [];
   const seen = new Set();
+  const userProviderRoot = path.join(app.getPath('userData'), 'providers');
   for (const root of providerRoots()) {
     if (!fs.existsSync(root)) continue;
-    const sourceKind = root.startsWith(app.getPath('userData')) ? 'user' : 'bundled';
+    const sourceKind = isInsidePath(userProviderRoot, root) ? 'user' : 'bundled';
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
       const providerRoot = path.join(root, entry.name);
@@ -589,7 +611,16 @@ function commandLineLength(args) {
 }
 
 function compressDocIdArgs(scriptName, args) {
-  const supported = new Set(['export_onenote.py', 'export_wiz.py']);
+  const supported = new Set([
+    'export_aliyun_thoughts.py',
+    'export_feishu.py',
+    'export_onenote.py',
+    'export_wiz.py',
+    'export_yinxiang.py',
+    'export_youdao.py',
+    'export_yuque.py',
+    'ima_knowledge.py'
+  ]);
   if (!supported.has(scriptName)) {
     return args;
   }
@@ -699,6 +730,10 @@ function showAboutDialog() {
 }
 
 function openProjectUrl(url) {
+  if (!isAllowedExternalUrl(url)) {
+    dialog.showErrorBox('打开链接失败', '只允许打开 http/https 链接。');
+    return;
+  }
   shell.openExternal(url).catch((error) => {
     dialog.showErrorBox('打开链接失败', error.message || String(error));
   });
@@ -768,6 +803,15 @@ function isAllowedRemoteTextUrl(value) {
       return parsed.pathname.startsWith('/tllovesxs/wandao/');
     }
     return false;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isAllowedExternalUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
   } catch (_error) {
     return false;
   }
@@ -1009,6 +1053,10 @@ ipcMain.handle('fetch-remote-text', async (event, url) => {
 
 ipcMain.handle('run-python-command', async (event, scriptName, args, options = {}) => {
   return new Promise((resolve, reject) => {
+    if (pythonProcess) {
+      resolve({ success: false, error: '已有任务正在运行，请先停止当前任务或等待完成。' });
+      return;
+    }
     let scriptPath;
     let commandArgs;
     try {
@@ -1103,7 +1151,8 @@ ipcMain.handle('send-python-input', async (event, text) => {
 
 ipcMain.handle('read-file', async (event, filePath) => {
   try {
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const managedPath = resolveManagedFilePath(filePath, { allowProjectRoot: true });
+    const content = fs.readFileSync(managedPath, 'utf-8');
     return { success: true, content };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1112,7 +1161,9 @@ ipcMain.handle('read-file', async (event, filePath) => {
 
 ipcMain.handle('write-file', async (event, filePath, content) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf-8');
+    const managedPath = resolveManagedFilePath(filePath);
+    fs.mkdirSync(path.dirname(managedPath), { recursive: true });
+    fs.writeFileSync(managedPath, content, 'utf-8');
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1120,7 +1171,11 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
 });
 
 ipcMain.handle('file-exists', async (event, filePath) => {
-  return fs.existsSync(filePath);
+  try {
+    return fs.existsSync(resolveManagedFilePath(filePath, { allowProjectRoot: true }));
+  } catch (_error) {
+    return false;
+  }
 });
 
 ipcMain.handle('open-path', async (event, targetPath) => {
@@ -1130,6 +1185,9 @@ ipcMain.handle('open-path', async (event, targetPath) => {
 
 ipcMain.handle('open-external', async (event, url) => {
   try {
+    if (!isAllowedExternalUrl(url)) {
+      return { success: false, error: '只允许打开 http/https 链接。' };
+    }
     await shell.openExternal(url);
     return { success: true };
   } catch (error) {

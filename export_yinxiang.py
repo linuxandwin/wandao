@@ -25,6 +25,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -760,6 +761,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--convert-enex-only", action="store_true", help="只转换已有 ENEX，不连接印象笔记")
     parser.add_argument("--scan-toc", action="store_true", help="读取本地同步库目录")
     parser.add_argument("--doc-id", action="append", default=[], help="只导出指定笔记 GUID，可重复")
+    parser.add_argument("--doc-id-file", default="", help="从文件读取要导出的笔记 GUID，JSON 数组或逐行文本均可")
     parser.add_argument("--incremental", action="store_true", help="已有 Markdown 文件时跳过")
     add_checkpoint_args(parser)
     parser.add_argument("--force", action="store_true", help="重新初始化本地同步库")
@@ -770,7 +772,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-chunk-results", type=int, default=250, help="每批同步数量")
     parser.add_argument("--cache-memory-limit", type=int, default=512, help="下载缓存内存限制 MB")
     parser.add_argument("--progress-every", type=int, default=1, help="每处理多少篇输出一次进度")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    extend_arg_list_from_file(args, "doc_id")
+    return args
 
 
 def main(argv: list[str]) -> int:

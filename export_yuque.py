@@ -62,6 +62,7 @@ from export_aliyun_thoughts import (
     wait_for_debug_port,
 )
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_report import finalize_report
 
 
@@ -1401,6 +1402,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
     add_checkpoint_args(parser)
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id/uuid, repeatable")
+    parser.add_argument("--doc-id-file", default="", help="Read selected document ids from a JSON array/object or line-based text file")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress after N documents")
     parser.add_argument("--request-delay", type=float, default=0.8, help="Fixed seconds to wait before each document/API request")
@@ -1410,7 +1412,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--download-attachments", action="store_true", default=True, help="Download Yuque file attachments locally")
     parser.add_argument("--skip-attachments", dest="download_attachments", action="store_false", help="Keep Yuque attachment links remote instead of downloading files")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close Chrome started by this script after export")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    extend_arg_list_from_file(args, "selected_doc_ids")
+    return args
 
 
 def main(argv: list[str]) -> int:

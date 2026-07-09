@@ -133,6 +133,13 @@ def validate_fields(data: dict[str, Any], path: Path) -> list[ValidationIssue]:
             issues.append(ValidationIssue(path, f"fields[{index}].arg 必须是字符串"))
         if "required" in field and not isinstance(field["required"], bool):
             issues.append(ValidationIssue(path, f"fields[{index}].required 必须是布尔值"))
+        for action_key in ("actions", "includeActions", "excludeActions", "skipActions"):
+            if action_key in field:
+                value = field[action_key]
+                if isinstance(value, str):
+                    continue
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    issues.append(ValidationIssue(path, f"fields[{index}].{action_key} 必须是字符串或字符串数组"))
         if field_type == "select" and "options" in field and not isinstance(field["options"], list):
             issues.append(ValidationIssue(path, f"fields[{index}].options 必须是数组"))
     return issues

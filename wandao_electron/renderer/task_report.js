@@ -56,11 +56,11 @@
       const looksLikeFailure = value.error || value.reason || value.message || value.relativePath || value.url || value.title;
       if (looksLikeFailure) items.push({ source, ...value });
       Object.entries(value).forEach(([key, child]) => {
-        if (/fail|error|warning/i.test(key)) visit(child, key);
+        if (/fail|error/i.test(key)) visit(child, key);
       });
     };
     if (data && typeof data === 'object') {
-      ['failures', 'resourceFailures', 'imageFailures', 'attachmentFailures', 'resourceWarnings', 'errors'].forEach((key) => {
+      ['failures', 'resourceFailures', 'imageFailures', 'attachmentFailures', 'errors'].forEach((key) => {
         visit(data[key], key);
       });
     }

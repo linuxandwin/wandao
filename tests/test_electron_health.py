@@ -1,5 +1,6 @@
 import re
 import unittest
+import json
 from pathlib import Path
 
 
@@ -50,6 +51,18 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("/tllovesxs/wandao/", main_js)
         self.assertIn("公告文档超过 1MB", main_js)
 
+    def test_file_and_external_ipc_have_main_process_boundaries(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+
+        self.assertIn("function resolveManagedFilePath", main_js)
+        self.assertIn("managedFileRoots", main_js)
+        self.assertIn("resolveManagedFilePath(filePath, { allowProjectRoot: true })", main_js)
+        self.assertIn("resolveManagedFilePath(filePath)", main_js)
+        self.assertIn("function isAllowedExternalUrl", main_js)
+        self.assertIn("parsed.protocol === 'https:' || parsed.protocol === 'http:'", main_js)
+        self.assertIn("if (!isAllowedExternalUrl(url))", main_js)
+        self.assertNotIn("root.startsWith(app.getPath('userData'))", main_js)
+
     def test_settings_have_schema_version_and_normalization(self) -> None:
         main_js = read_text("wandao_electron/main.js")
 
@@ -89,11 +102,51 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("if (task.status === 'running') return false", app_js)
         self.assertIn("该平台暂未声明失败项重试能力", app_js)
 
+    def test_manifest_action_fields_can_be_scoped_per_action(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        schema = read_text("providers/provider.schema.json")
+        guide = read_text("docs/插件开发指南.md")
+
+        self.assertIn("function manifestFieldAppliesToAction", app_js)
+        self.assertIn("field.actions || field.includeActions || field.onlyActions", app_js)
+        self.assertIn("field.excludeActions || field.skipActions", app_js)
+        self.assertIn("isManifestOutputField(field) && !manifestActionUsesOutput(action)", app_js)
+        self.assertIn('"includeActions"', schema)
+        self.assertIn('"excludeActions"', schema)
+        self.assertIn("字段默认会参与所有动作", guide)
+
     def test_scan_toc_passes_provider_id_to_python_process(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
 
         self.assertIn("runPythonCommand(config.script, args, {", app_js)
         self.assertIn("providerId: toolId", app_js)
+
+    def test_main_process_rejects_parallel_python_tasks(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        marker = "ipcMain.handle('run-python-command'"
+        start = main_js.find(marker)
+        self.assertGreater(start, -1)
+        handler = main_js[start : start + 500]
+
+        self.assertIn("if (pythonProcess)", handler)
+        self.assertIn("已有任务正在运行", handler)
+
+    def test_main_process_compresses_large_doc_id_selection_for_exporters(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+
+        self.assertIn("function compressDocIdArgs", main_js)
+        for script in [
+            "export_aliyun_thoughts.py",
+            "export_feishu.py",
+            "export_onenote.py",
+            "export_wiz.py",
+            "export_yinxiang.py",
+            "export_youdao.py",
+            "export_yuque.py",
+            "ima_knowledge.py",
+        ]:
+            self.assertIn(f"'{script}'", main_js)
+        self.assertIn("return [...compactArgs, '--doc-id-file', filePath]", main_js)
 
     def test_group_toc_progress_is_labeled_as_topic_list_reading(self) -> None:
         structured_logs_js = read_text("wandao_electron/renderer/structured_logs.js")
@@ -111,8 +164,9 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("id: 'zsxq-group'", providers_js)
         self.assertIn("id: 'zsxq-column'", providers_js)
         self.assertIn("capabilities: { login: true, scanToc: false, retryFailures: true }", providers_js)
-        self.assertIn("capabilities: { login: true, scanToc: true }", providers_js)
+        self.assertIn("capabilities: { login: true, scanToc: true, retryFailures: true }", providers_js)
         self.assertIn("checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }", providers_js)
+        self.assertIn("checkpoint: { supported: true, strategy: 'items', resourceTracking: true }", providers_js)
         self.assertIn("retryFailures: { arg: '--retry-failed'", providers_js)
         self.assertIn('template id="template-zsxq-group"', index_html)
         self.assertIn('template id="template-zsxq-column"', index_html)
@@ -139,6 +193,10 @@ class ElectronHealthTests(unittest.TestCase):
             providers_js,
             r"id: 'zsxq-group'[\s\S]+?checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }",
         )
+        self.assertRegex(
+            providers_js,
+            r"id: 'zsxq-column'[\s\S]+?checkpoint: { supported: true, strategy: 'items', resourceTracking: true }",
+        )
         ima_import_block = re.search(r"id: 'ima-import'[\s\S]+?\n    }", providers_js)
         self.assertIsNotNone(ima_import_block)
         self.assertNotIn("checkpoint: { supported: true", ima_import_block.group(0))
@@ -147,11 +205,46 @@ class ElectronHealthTests(unittest.TestCase):
         package_json = read_text("wandao_electron/package.json")
         pyproject = read_text("pyproject.toml")
 
-        self.assertIn('"version": "1.2.5"', package_json)
+        self.assertIn('"version": "1.2.6"', package_json)
         self.assertIn('"from": "../wandao_checkpoint.py"', package_json)
         self.assertIn('"to": "python/wandao_checkpoint.py"', package_json)
-        self.assertIn('version = "1.2.5"', pyproject)
+        self.assertIn('"from": "../wandao_cli.py"', package_json)
+        self.assertIn('"to": "python/wandao_cli.py"', package_json)
+        self.assertIn('version = "1.2.6"', pyproject)
         self.assertIn('"wandao_checkpoint"', pyproject)
+        self.assertIn('"wandao_cli"', pyproject)
+
+    def test_provider_python_scripts_are_bundled_for_packaged_app(self) -> None:
+        package = json.loads(read_text("wandao_electron/package.json"))
+        providers_js = read_text("wandao_electron/renderer/providers.js")
+        resources = package["build"]["extraResources"]
+        bundled_python = {
+            Path(str(item.get("from", "")).replace("\\", "/")).name
+            for item in resources
+            if isinstance(item, dict) and str(item.get("from", "")).endswith(".py")
+        }
+        provider_scripts = set(re.findall(r"script:\s*'([^']+\.py)'", providers_js))
+        required_common = {
+            "export_aliyun_thoughts.py",
+            "wandao_logging.py",
+            "wandao_report.py",
+            "wandao_checkpoint.py",
+            "wandao_cli.py",
+            "gui_utils.py",
+        }
+
+        self.assertFalse(provider_scripts - bundled_python)
+        self.assertFalse(required_common - bundled_python)
+
+    def test_builtin_provider_scripts_are_allowed_by_main_process(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        providers_js = read_text("wandao_electron/renderer/providers.js")
+        allowed_match = re.search(r"const ALLOWED_SCRIPTS = new Set\(\[([\s\S]+?)\]\);", main_js)
+        self.assertIsNotNone(allowed_match)
+        allowed_scripts = set(re.findall(r"'([^']+\.py)'", allowed_match.group(1)))
+        provider_scripts = set(re.findall(r"script:\s*'([^']+\.py)'", providers_js))
+
+        self.assertFalse(provider_scripts - allowed_scripts)
 
 
 if __name__ == "__main__":

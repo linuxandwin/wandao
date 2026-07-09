@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -120,6 +120,10 @@
       {
         "from": "../wandao_checkpoint.py",
         "to": "python/wandao_checkpoint.py"
+      },
+      {
+        "from": "../wandao_cli.py",
+        "to": "python/wandao_cli.py"
       },
       {
         "from": "../requirements.txt",

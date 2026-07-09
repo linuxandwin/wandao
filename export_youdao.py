@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -1290,6 +1291,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Chrome DevTools 调试端口")
     parser.add_argument("--close-started-chrome", action="store_true", help="任务结束后关闭本脚本启动的浏览器")
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="只导出指定笔记 ID，可重复")
+    parser.add_argument("--doc-id-file", default="", help="从文件读取要导出的笔记 ID，JSON 数组或逐行文本均可")
     parser.add_argument("--incremental", action="store_true", help="已有文件则跳过")
     parser.add_argument("--update-existing", action="store_true", help="配合 --incremental 时也更新已有文件")
     add_checkpoint_args(parser)
@@ -1300,7 +1302,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--retry", type=int, default=2, help="网络请求失败时的重试次数")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="图片下载失败时保留远程链接")
     parser.add_argument("--drop-failed-images", dest="keep_remote_images", action="store_false", help="图片下载失败时移除远程链接")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    extend_arg_list_from_file(args, "selected_doc_ids")
+    return args
 
 
 def main(argv: list[str]) -> int:

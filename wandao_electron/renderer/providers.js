@@ -77,7 +77,9 @@
       urlParam: '--entry-url',
       outputParam: '--output',
       defaults: { output: 'exports/zsxq-column' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: true }
     },
     {
       id: 'yuque',

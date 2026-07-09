@@ -39,6 +39,7 @@ from export_aliyun_thoughts import (
     wait_for_debug_port,
 )
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_report import finalize_report
 
 
@@ -387,25 +388,10 @@ def save_auth_state(args: argparse.Namespace, cdp: CDPClient) -> dict[str, Any]:
 
 
 def load_doc_id_file(args: argparse.Namespace) -> None:
-    path = Path(args.doc_id_file).resolve() if args.doc_id_file else None
-    if not path:
-        return
-    if not path.exists():
-        raise ExportError(f"选择文件不存在：{path}")
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        return
     try:
-        payload = json.loads(text)
-        if isinstance(payload, dict):
-            values = payload.get("docIds") or payload.get("doc_ids") or payload.get("ids") or []
-        else:
-            values = payload
-        if not isinstance(values, list):
-            raise ValueError("not a list")
-        args.selected_doc_ids.extend(str(item) for item in values if str(item).strip())
-    except Exception:
-        args.selected_doc_ids.extend(line.strip() for line in text.splitlines() if line.strip())
+        extend_arg_list_from_file(args, "selected_doc_ids")
+    except (FileNotFoundError, ValueError) as exc:
+        raise ExportError(str(exc)) from exc
 
 
 def folders_from_snapshot(snapshot: dict[str, Any]) -> list[WizFolder]:
@@ -1147,13 +1133,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--request-delay", type=float, default=0.0, help="资源请求延迟秒")
     parser.add_argument("--request-jitter", type=float, default=0.0, help="资源请求随机浮动秒")
     parser.add_argument("--close-started-chrome", action="store_true", help="任务结束后关闭本工具启动的浏览器")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    load_doc_id_file(args)
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        load_doc_id_file(args)
         if args.login:
             print(json.dumps(run_login(args), ensure_ascii=False, indent=2))
             return 0

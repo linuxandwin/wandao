@@ -2383,10 +2383,42 @@ function manifestFieldValue(provider, field) {
   return String(element.value || '').trim();
 }
 
+function manifestActionKey(action) {
+  return String(action.id || action.kind || action.label || '').trim();
+}
+
+function manifestFieldActionList(value) {
+  return asArray(value).map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function isManifestOutputField(field) {
+  const name = String(field.name || '').toLowerCase();
+  const arg = String(field.arg || '').toLowerCase();
+  return arg === '--output' || name === 'output' || name === 'output_dir' || name === 'output-dir';
+}
+
+function manifestActionUsesOutput(action) {
+  const key = manifestActionKey(action).toLowerCase();
+  const kind = String(action.kind || '').toLowerCase();
+  return ['export', 'import', 'run'].includes(kind) || ['export', 'import', 'run', 'start'].includes(key);
+}
+
+function manifestFieldAppliesToAction(field, action) {
+  const key = manifestActionKey(action);
+  const kind = String(action.kind || '').trim();
+  const include = manifestFieldActionList(field.actions || field.includeActions || field.onlyActions);
+  if (include.length && !include.includes(key) && !include.includes(kind)) return false;
+  const exclude = manifestFieldActionList(field.excludeActions || field.skipActions);
+  if (exclude.includes(key) || exclude.includes(kind)) return false;
+  if (isManifestOutputField(field) && !manifestActionUsesOutput(action)) return false;
+  return true;
+}
+
 function buildManifestActionArgs(provider, action, fields) {
   const args = [...(action.args || [])];
   for (const field of fields) {
     if (field.type === 'notice') continue;
+    if (!manifestFieldAppliesToAction(field, action)) continue;
     const value = manifestFieldValue(provider, field);
     if (field.required && (value === '' || value === false)) {
       throw new Error(`请填写：${field.label || field.name}`);

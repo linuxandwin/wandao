@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
+from wandao_cli import extend_arg_list_from_file
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -1090,6 +1091,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--scan-toc", action="store_true", help="读取知识库目录树")
     parser.add_argument("--output", help="导出输出目录")
     parser.add_argument("--doc-id", action="append", default=[], help="要导出的条目 ID，可重复")
+    parser.add_argument("--doc-id-file", default="", help="从文件读取要导出的条目 ID，JSON 数组或逐行文本均可")
     parser.add_argument("--source-dir", help="本地待导入目录")
     parser.add_argument("--source-file", help="单篇测试文件")
     parser.add_argument("--scan-source", action="store_true", help="扫描本地可导入文件")
@@ -1104,7 +1106,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--request-jitter", type=float, default=0.2, help="API 请求随机浮动秒")
     parser.add_argument("--progress-every", type=int, default=10, help="每处理多少条输出一次进度")
     add_checkpoint_args(parser)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    extend_arg_list_from_file(args, "doc_id")
+    return args
 
 
 def main(argv: list[str]) -> int:
