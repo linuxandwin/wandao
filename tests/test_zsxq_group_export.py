@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,8 @@ from export_zsxq import (
     content_from_topic_api,
     filter_follow_zsxq_links,
     group_id_from_url,
+    normalize_group_max_pages,
+    normalize_group_page_size,
     group_scope_from_args,
     is_group_entry_url,
     localize_files,
@@ -18,8 +21,12 @@ from export_zsxq import (
     previous_zsxq_end_time,
     resolve_toc_item_api,
     should_long_sleep_after_export,
+    summarize_zsxq_api_failure,
     throttle_comment_request,
+    zsxq_item_key_from_source,
+    zsxq_resource_key,
 )
+from wandao_checkpoint import WandaoCheckpoint
 
 
 class ZsxqGroupExportTests(unittest.TestCase):
@@ -75,16 +82,121 @@ class ZsxqGroupExportTests(unittest.TestCase):
 
         self.assertEqual(args.group_page_delay, 4.0)
         self.assertEqual(args.group_page_jitter, 4.0)
-        self.assertEqual(args.group_page_size, 60)
+        self.assertEqual(args.group_page_size, 20)
+        self.assertEqual(args.request_delay, 2.5)
+        self.assertEqual(args.request_jitter, 2.5)
         self.assertFalse(args.fetch_full_comments)
         self.assertEqual(args.comment_request_delay, 3.0)
         self.assertEqual(args.comment_request_jitter, 2.0)
 
-    def test_group_limit_defaults_and_rejects_large_single_runs(self) -> None:
+    def test_zsxq_timing_args_have_safe_floor(self) -> None:
+        args = parse_args(
+            [
+                "--entry-url",
+                "https://wx.zsxq.com/group/123456789",
+                "--output",
+                "out",
+                "--request-delay",
+                "0",
+                "--request-jitter",
+                "0",
+                "--comment-request-delay",
+                "0",
+                "--comment-request-jitter",
+                "0",
+                "--group-page-size",
+                "60",
+            ]
+        )
+
+        self.assertEqual(args.request_delay, 1.0)
+        self.assertEqual(args.request_jitter, 1.0)
+        self.assertEqual(args.comment_request_delay, 3.0)
+        self.assertEqual(args.comment_request_jitter, 2.0)
+        self.assertEqual(args.group_page_size, 20)
+
+    def test_checkpoint_args_are_parsed(self) -> None:
+        args = parse_args(
+            [
+                "--entry-url",
+                "https://wx.zsxq.com/group/123456789",
+                "--output",
+                "out",
+                "--checkpoint-file",
+                "out/.wandao/checkpoint.sqlite",
+                "--resume",
+                "--retry-failed",
+            ]
+        )
+
+        self.assertEqual(args.checkpoint_file, "out/.wandao/checkpoint.sqlite")
+        self.assertTrue(args.resume)
+        self.assertTrue(args.retry_failed)
+
+    def test_full_comment_api_uses_smaller_safe_batch(self) -> None:
+        self.assertEqual(export_zsxq.DEFAULT_COMMENT_BATCH_SIZE, 30)
+        source = inspect.getsource(export_zsxq.fetch_topic_comments_api)
+        self.assertIn("DEFAULT_COMMENT_BATCH_SIZE", source)
+
+    def test_group_page_size_is_clamped_to_safe_api_count(self) -> None:
+        self.assertEqual(normalize_group_page_size(argparse.Namespace(group_page_size=0)), 20)
+        self.assertEqual(normalize_group_page_size(argparse.Namespace(group_page_size=12)), 12)
+        self.assertEqual(normalize_group_page_size(argparse.Namespace(group_page_size=60)), 20)
+
+    def test_group_limit_defaults_and_allows_large_single_runs(self) -> None:
         self.assertEqual(normalize_group_limit(argparse.Namespace(limit=0)), 50)
         self.assertEqual(normalize_group_limit(argparse.Namespace(limit=120)), 120)
-        with self.assertRaises(ExportError):
-            normalize_group_limit(argparse.Namespace(limit=10000))
+        self.assertEqual(normalize_group_limit(argparse.Namespace(limit=10000)), 10000)
+
+    def test_group_max_pages_expands_to_cover_large_limit(self) -> None:
+        args = argparse.Namespace(group_max_pages=200)
+
+        self.assertEqual(normalize_group_max_pages(args, limit=100, page_size=20), 200)
+        self.assertEqual(normalize_group_max_pages(args, limit=5000, page_size=20), 250)
+
+    def test_api_failure_summary_keeps_http_200_diagnostics(self) -> None:
+        result = {
+            "attempts": [
+                {
+                    "url": "https://api.zsxq.com/v2/groups/123/topics?count=60",
+                    "status": 200,
+                    "topicCount": 0,
+                    "textPreview": "<html>请登录后继续</html>",
+                    "authRequired": True,
+                },
+                {
+                    "url": "https://api.zsxq.com/v1.10/groups/123/topics?count=60",
+                    "status": 200,
+                    "topicCount": 0,
+                    "message": "",
+                },
+            ],
+            "authRequired": True,
+        }
+
+        message = summarize_zsxq_api_failure(result, "知识星球 group 主题列表读取失败：123")
+
+        self.assertIn("登录状态", message)
+        self.assertIn("HTTP 200", message)
+        self.assertIn("帖子列表接口", message)
+        self.assertNotEqual(message, "200; 200")
+
+    def test_api_failure_summary_explains_deleted_topic_code(self) -> None:
+        result = {
+            "attempts": [
+                {
+                    "url": "https://api.zsxq.com/v2/topics/22255248518811121/info",
+                    "status": 200,
+                    "code": "1007",
+                    "message": "主题不存在或已被删除",
+                }
+            ],
+        }
+
+        message = summarize_zsxq_api_failure(result, "topic API 读取失败：22255248518811121")
+
+        self.assertIn("目标帖子不存在", message)
+        self.assertIn("code=1007", message)
 
     def test_full_comment_api_has_its_own_safe_delay_floor(self) -> None:
         args = argparse.Namespace(
@@ -154,6 +266,39 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(content["files"][0]["name"], "资料.pdf")
         self.assertIn("## 评论区", markdown)
         self.assertEqual(content["commentCount"], 1)
+        self.assertEqual(content["topicId"], "123456789")
+        self.assertEqual(zsxq_item_key_from_source(content), "zsxq:topic:123456789")
+
+    def test_article_content_preserves_topic_id_for_checkpoint_key(self) -> None:
+        class UnusedCdp:
+            pass
+
+        args = argparse.Namespace(include_comments=False, fetch_full_comments=False, skip_video_topics=True)
+        source = {
+            "title": "带文章的主题",
+            "topicId": "22255488584842111",
+            "topicUid": "22255488584842111",
+            "key": "group:all:0:22255488584842111",
+            "groupTitle": "全部主题",
+            "rawTopic": {
+                "topic_id": "22255488584842111",
+                "talk": {
+                    "text": "摘要",
+                    "article": {"article_url": "https://articles.zsxq.com/example.html", "title": "完整文章"},
+                },
+            },
+        }
+
+        with mock.patch.object(
+            export_zsxq,
+            "collect_article_content",
+            return_value={"title": "完整文章", "markdown": "# 完整文章\n", "images": [], "files": []},
+        ):
+            content = resolve_toc_item_api(UnusedCdp(), source, args)
+
+        self.assertEqual(content["topicId"], "22255488584842111")
+        self.assertEqual(content["topicUid"], "22255488584842111")
+        self.assertEqual(zsxq_item_key_from_source(content), "zsxq:topic:22255488584842111")
 
     def test_localize_files_rewrites_attachment_links_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,6 +316,35 @@ class ZsxqGroupExportTests(unittest.TestCase):
                 )
 
         self.assertEqual(success, 1)
+        self.assertEqual(failures, [])
+        self.assertIn("assets/files/demo.pdf", markdown)
+
+    def test_localize_files_reuses_completed_checkpoint_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            md_path = root / "doc.md"
+            target = root / "assets" / "files" / "demo.pdf"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("demo", encoding="utf-8")
+            checkpoint = WandaoCheckpoint.open(root / ".wandao" / "checkpoint.sqlite", task_id="default", provider_id="zsxq", action="export")
+            try:
+                resource_key = zsxq_resource_key("attachment", "https://example.com/file.pdf")
+                checkpoint.upsert_resource("item-1", resource_key, "attachment", "https://example.com/file.pdf")
+                checkpoint.complete_resource(resource_key, local_path=str(target))
+
+                with mock.patch.object(export_zsxq, "download_file", side_effect=AssertionError("should reuse checkpoint")):
+                    markdown, success, failures = export_zsxq.localize_files(
+                        "[资料](https://example.com/file.pdf)",
+                        [{"name": "资料.pdf", "url": "https://example.com/file.pdf"}],
+                        md_path,
+                        10,
+                        checkpoint=checkpoint,
+                        item_key="item-1",
+                    )
+            finally:
+                checkpoint.close()
+
+        self.assertEqual(success, 0)
         self.assertEqual(failures, [])
         self.assertIn("assets/files/demo.pdf", markdown)
 

@@ -60,6 +60,7 @@ from export_aliyun_thoughts import (
     wait_for_debug_port,
 )
 from wandao_report import finalize_report
+from wandao_checkpoint import WandaoCheckpoint
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -68,8 +69,17 @@ DEFAULT_PROFILE = ".zsxq-chrome-profile"
 DEFAULT_AUTH_FILE = ".zsxq_auth.json"
 DEFAULT_ENTRY_URL = ""
 DEFAULT_GROUP_LIMIT = 50
-DEFAULT_GROUP_BATCH_SIZE = 60
-MAX_GROUP_LIMIT = 500
+DEFAULT_GROUP_BATCH_SIZE = 20
+MAX_GROUP_BATCH_SIZE = 20
+GROUP_LONG_EXPORT_WARNING_LIMIT = 1000
+DEFAULT_REQUEST_DELAY = 2.5
+DEFAULT_REQUEST_JITTER = 2.5
+MIN_REQUEST_DELAY = 1.0
+MIN_REQUEST_JITTER = 1.0
+DEFAULT_COMMENT_BATCH_SIZE = 30
+DEFAULT_COMMENT_REQUEST_DELAY = 3.0
+DEFAULT_COMMENT_REQUEST_JITTER = 2.0
+GROUP_CURSOR_NAME = "zsxq-group"
 
 
 class SkipDocument(Exception):
@@ -193,6 +203,18 @@ def save_auth_state(cdp: CDPClient, auth_file: Path, entry_url: str) -> dict[str
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"cookieCount": len(cookies), "authFile": str(auth_file)}
+
+
+def annotate_auth_state(auth_file: Path, account: dict[str, Any]) -> None:
+    if not account:
+        return
+    try:
+        payload = json.loads(auth_file.read_text(encoding="utf-8"))
+        payload["account"] = account
+        payload["verifiedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
 
 
 def load_auth_state(cdp: CDPClient, auth_file: Path) -> int:
@@ -675,11 +697,16 @@ async () => {
     await wait(350);
   };
   const groupId = (location.pathname.match(/\/columns\/(\d+)/) || [])[1] || "";
+  const parseZsxqJson = raw => JSON.parse(raw.replace(
+    /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\s*:\s*)(\d{15,})/g,
+    '$1"$2"'
+  ));
   const apiGet = async (url, retries = 2) => {
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
         const r = await fetch(url, {credentials: "include", headers: {accept: "application/json, text/plain, */*"}});
-        const data = await r.json();
+        const text = await r.text();
+        const data = parseZsxqJson(text);
         if (data && data.succeeded) return data.resp_data || {};
       } catch (err) {}
       if (attempt < retries) await wait(900 + attempt * 1200);
@@ -1075,9 +1102,68 @@ def normalize_group_limit(args: argparse.Namespace | None = None) -> int:
     raw_limit = int((getattr(args, "limit", 0) if args else 0) or 0)
     if raw_limit <= 0:
         return DEFAULT_GROUP_LIMIT
-    if raw_limit > MAX_GROUP_LIMIT:
-        raise ExportError(f"知识星球 Group 单次最多导出 {MAX_GROUP_LIMIT} 条。大星球请分批导出，避免触发风控。")
     return raw_limit
+
+
+def normalize_group_page_size(args: argparse.Namespace | None = None) -> int:
+    raw = getattr(args, "group_page_size", DEFAULT_GROUP_BATCH_SIZE) if args else DEFAULT_GROUP_BATCH_SIZE
+    try:
+        value = int(raw or DEFAULT_GROUP_BATCH_SIZE)
+    except (TypeError, ValueError):
+        value = DEFAULT_GROUP_BATCH_SIZE
+    return max(1, min(MAX_GROUP_BATCH_SIZE, value))
+
+
+def normalize_group_max_pages(args: argparse.Namespace | None, limit: int, page_size: int) -> int:
+    raw = getattr(args, "group_max_pages", 200) if args else 200
+    try:
+        value = max(1, int(raw or 200))
+    except (TypeError, ValueError):
+        value = 200
+    if limit > 0 and page_size > 0:
+        needed = max(1, (limit + page_size - 1) // page_size)
+        return max(value, needed)
+    return value
+
+
+def warn_large_group_export(args: argparse.Namespace | None, limit: int) -> None:
+    if not args or limit <= GROUP_LONG_EXPORT_WARNING_LIMIT or getattr(args, "_large_group_export_warned", False):
+        return
+    setattr(args, "_large_group_export_warned", True)
+    emit(
+        args,
+        f"知识星球 Group 本次计划导出 {limit} 条。连续长时间导出可能触发风控甚至封号，尽量不要让单次任务超过 24 小时。",
+        event="task.warning",
+        level="warn",
+        risk={"type": "long-running-zsxq-export", "limit": limit, "threshold": GROUP_LONG_EXPORT_WARNING_LIMIT},
+    )
+
+
+def apply_zsxq_safety_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    args.group_page_size = normalize_group_page_size(args)
+    try:
+        args.request_delay = max(MIN_REQUEST_DELAY, float(getattr(args, "request_delay", DEFAULT_REQUEST_DELAY) or 0))
+    except (TypeError, ValueError):
+        args.request_delay = DEFAULT_REQUEST_DELAY
+    try:
+        args.request_jitter = max(MIN_REQUEST_JITTER, float(getattr(args, "request_jitter", DEFAULT_REQUEST_JITTER) or 0))
+    except (TypeError, ValueError):
+        args.request_jitter = DEFAULT_REQUEST_JITTER
+    try:
+        args.comment_request_delay = max(
+            DEFAULT_COMMENT_REQUEST_DELAY,
+            float(getattr(args, "comment_request_delay", DEFAULT_COMMENT_REQUEST_DELAY) or 0),
+        )
+    except (TypeError, ValueError):
+        args.comment_request_delay = DEFAULT_COMMENT_REQUEST_DELAY
+    try:
+        args.comment_request_jitter = max(
+            DEFAULT_COMMENT_REQUEST_JITTER,
+            float(getattr(args, "comment_request_jitter", DEFAULT_COMMENT_REQUEST_JITTER) or 0),
+        )
+    except (TypeError, ValueError):
+        args.comment_request_jitter = DEFAULT_COMMENT_REQUEST_JITTER
+    return args
 
 
 def group_scope_title(scope: str) -> str:
@@ -1146,6 +1232,162 @@ def topic_title_for_list(topic: dict[str, Any], fallback: str = "知识星球主
     return f"{fallback}-{topic_id}" if topic_id else fallback
 
 
+def zsxq_api_endpoint_label(url: str) -> str:
+    parsed = urllib.parse.urlparse(url or "")
+    path = parsed.path or ""
+    if "/columns/" in path and "/topics" in path:
+        return "专栏目录接口"
+    if "/groups/" in path and "/topics" in path:
+        return "帖子列表接口"
+    if "/topics/" in path and "/info" in path:
+        return "帖子正文接口"
+    if "/comments" in path:
+        return "评论接口"
+    return parsed.netloc or "接口"
+
+
+def summarize_zsxq_api_failure(result: dict[str, Any], action: str) -> str:
+    attempts = [item for item in (result.get("attempts") or []) if isinstance(item, dict)]
+    joined = " ".join(
+        str(value or "")
+        for item in attempts + [result]
+        for value in (
+            item.get("message"),
+            item.get("error"),
+            item.get("text"),
+            item.get("textPreview"),
+            item.get("code"),
+        )
+    )
+    if result.get("rateLimited") or re.search(r"Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁|非官方工具|1059", joined, re.I):
+        reason = "触发了知识星球频率限制或风控，请稍后重试，并适当调大请求延迟。"
+    elif result.get("authRequired") or re.search(r"登录|请登录|扫码|unauthorized|not authorized|未授权", joined, re.I):
+        reason = "登录状态没有生效或已过期，请在浏览器确认能看到目标内容后重新保存凭证。"
+    elif result.get("permissionDenied") or re.search(r"无权|权限|不是成员|加入星球|会员|购买|续费|已过期|forbidden", joined, re.I):
+        reason = "当前账号可能无权访问该星球/专栏，或会员状态已过期。"
+    elif re.search(r"无效的count|invalid count|14001", joined, re.I):
+        reason = f"接口参数 count 超出知识星球当前允许范围，已建议单批不超过 {MAX_GROUP_BATCH_SIZE} 条。"
+    elif re.search(r"版本太旧|下载并安装最新的版本", joined, re.I):
+        reason = "备用旧版接口已不可用，应优先使用新版接口；如果新版接口也失败，请查看同一条摘要里的新版接口错误。"
+    elif re.search(r"主题不存在|已被删除|not found|1007", joined, re.I):
+        reason = "目标帖子不存在、已删除，或接口返回的帖子 ID 不可用。"
+    elif re.search(r"Failed to fetch|NetworkError|ERR_", joined, re.I):
+        reason = "浏览器内请求接口失败，通常和登录态、网络拦截、CORS 或平台临时限制有关。"
+    else:
+        reason = "接口没有返回可用的数据结构，可能是入口 URL 不正确、接口格式变化或账号状态异常。"
+
+    details: list[str] = []
+    for item in attempts:
+        label = zsxq_api_endpoint_label(str(item.get("url") or ""))
+        status = item.get("status")
+        code = str(item.get("code") or "").strip()
+        message = str(item.get("message") or item.get("error") or item.get("textPreview") or "").strip()
+        topic_count = item.get("topicCount")
+        pieces = [label]
+        if status:
+            pieces.append(f"HTTP {status}")
+        if code:
+            pieces.append(f"code={code}")
+        if topic_count is not None:
+            pieces.append(f"topics={topic_count}")
+        if message:
+            pieces.append(message[:180])
+        details.append(" ".join(pieces))
+
+    if not details:
+        fallback = str(result.get("error") or result.get("text") or "").strip()
+        if fallback:
+            details.append(fallback[:260])
+
+    detail_text = "；".join(details)
+    return f"{action}：{reason}" + (f" 接口摘要：{detail_text}" if detail_text else "")
+
+
+def ensure_zsxq_api_origin(
+    cdp: CDPClient,
+    args: argparse.Namespace | None = None,
+    fallback_url: str = "https://wx.zsxq.com/",
+) -> None:
+    """Keep browser-side API fetches on wx.zsxq.com, otherwise CORS can block api.zsxq.com."""
+    try:
+        host = str(cdp.evaluate("location.hostname", timeout=5) or "").lower()
+    except Exception:
+        host = ""
+    if host == "wx.zsxq.com":
+        return
+    navigate_with_retry(cdp, fallback_url or "https://wx.zsxq.com/", args)
+    wait_eval(
+        cdp,
+        "({host: location.hostname, textLen: (document.body && document.body.innerText || '').length})",
+        lambda value: value.get("host") == "wx.zsxq.com" or value.get("textLen", 0) > 20,
+        timeout=20,
+        args=args,
+    )
+
+
+def validate_zsxq_auth(cdp: CDPClient, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    """Best-effort account check after saving cookies; do not treat network failures as fatal."""
+    ensure_zsxq_api_origin(cdp, args, "https://wx.zsxq.com/")
+    expression = r"""
+    (async () => {
+      const urls = [
+        "https://api.zsxq.com/v3/users/self",
+        "https://api.zsxq.com/v2/users/self"
+      ];
+      const parseZsxqJson = (raw) => JSON.parse(raw.replace(
+        /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\s*:\s*)(\d{15,})/g,
+        '$1"$2"'
+      ));
+      const compact = raw => String(raw || "").replace(/\s+/g, " ").trim().slice(0, 240);
+      const attempts = [];
+      for (const url of urls) {
+        try {
+          const r = await fetch(url, {
+            credentials: "include",
+            headers: {accept: "application/json, text/plain, */*"}
+          });
+          const text = await r.text();
+          let data = {};
+          try { data = parseZsxqJson(text); } catch (err) {}
+          const payload = data && data.resp_data || {};
+          const user = payload.user || payload.user_info || payload.owner || payload;
+          const code = data && (data.code || data.error_code || data.status) || "";
+          const message = data && (data.msg || data.error || data.message || data.info) || "";
+          const account = {
+            userId: String(user.user_id || user.uid || user.id || ""),
+            name: String(user.name || user.nickname || user.display_name || user.alias || "")
+          };
+          attempts.push({
+            url,
+            status: r.status,
+            ok: !!data.succeeded,
+            code: String(code || ""),
+            message: String(message || ""),
+            textPreview: compact(text),
+            account
+          });
+          if (data && data.succeeded && (account.userId || account.name)) {
+            return {ok: true, status: r.status, url, account, attempts};
+          }
+        } catch (err) {
+          attempts.push({url, ok: false, error: String(err)});
+        }
+      }
+      const text = attempts.map(x => [
+        x.status ? "HTTP " + x.status : "",
+        x.code ? "code=" + x.code : "",
+        x.message || x.error || x.textPreview || ""
+      ].filter(Boolean).join(" ")).join("; ").slice(0, 700);
+      return {ok: false, attempts, authRequired: true, text};
+    })()
+    """
+    try:
+        result = cdp.evaluate(expression, timeout=30) or {}
+    except Exception as exc:
+        return {"ok": False, "text": str(exc), "attempts": [{"error": str(exc)}]}
+    return result if isinstance(result, dict) else {"ok": False, "text": str(result)}
+
+
 def fetch_group_topics_page(
     cdp: CDPClient,
     group_id: str,
@@ -1176,6 +1418,9 @@ def fetch_group_topics_page(
         /("(?:topic_id|topic_uid|group_id|user_id|uid|file_id|comment_id|column_id|image_id|video_id|owner_user_id|repliee_user_id)"\\s*:\\s*)(\\d{{15,}})/g,
         '$1"$2"'
       ));
+      const compact = raw => String(raw || "").replace(/\\s+/g, " ").trim().slice(0, 240);
+      const looksAuth = raw => /登录|请登录|扫码|unauthorized|not authorized|未授权/i.test(String(raw || ""));
+      const looksPermission = raw => /无权|权限|不是成员|加入星球|会员|购买|续费|已过期|forbidden/i.test(String(raw || ""));
       const attempts = [];
       for (const url of urls) {{
         try {{
@@ -1187,10 +1432,26 @@ def fetch_group_topics_page(
           const rateLimited = r.status === 429 || /Too Many Requests|请求过于频繁|请求太频繁|访问过于频繁/i.test(text);
           let data = {{}};
           try {{ data = parseZsxqJson(text); }} catch (err) {{}}
-          const antiCrawl = String(data && data.code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
+          const code = data && (data.code || data.error_code || data.status) || "";
+          const message = data && (data.msg || data.error || data.message || data.info) || "";
+          const textPreview = compact(text);
+          const authRequired = looksAuth(message) || looksAuth(textPreview);
+          const permissionDenied = looksPermission(message) || looksPermission(textPreview);
+          const antiCrawl = String(code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
           const topics = data && data.resp_data && Array.isArray(data.resp_data.topics) ? data.resp_data.topics : [];
-          attempts.push({{url, status: r.status, ok: !!data.succeeded, topicCount: topics.length, message: data && data.msg || ""}});
-          if (rateLimited || antiCrawl) return {{ok: false, rateLimited: true, status: r.status, text: text.slice(0, 240), attempts}};
+          attempts.push({{
+            url,
+            status: r.status,
+            ok: !!data.succeeded,
+            topicCount: topics.length,
+            code: String(code || ""),
+            message: String(message || ""),
+            textPreview,
+            contentType: r.headers.get("content-type") || "",
+            authRequired,
+            permissionDenied
+          }});
+          if (rateLimited || antiCrawl) return {{ok: false, rateLimited: true, status: r.status, text: textPreview, attempts}};
           if (data && data.succeeded && Array.isArray(data.resp_data && data.resp_data.topics)) {{
             return {{
               ok: true,
@@ -1205,13 +1466,21 @@ def fetch_group_topics_page(
           attempts.push({{url, ok: false, error: String(err)}});
         }}
       }}
-      return {{ok: false, attempts, text: attempts.map(x => x.message || x.error || x.status || "").join("; ").slice(0, 240)}};
+      const authRequired = attempts.some(x => x.authRequired);
+      const permissionDenied = attempts.some(x => x.permissionDenied);
+      const text = attempts.map(x => [
+        x.status ? "HTTP " + x.status : "",
+        x.code ? "code=" + x.code : "",
+        x.message || x.error || x.textPreview || ""
+      ].filter(Boolean).join(" ")).join("; ").slice(0, 700);
+      return {{ok: false, attempts, authRequired, permissionDenied, text}};
     }})()
     """
     retries = max(0, int(getattr(args, "rate_limit_retries", 5) if args else 5))
     result: dict[str, Any] = {}
     for attempt in range(retries + 1):
         check_stopped(args)
+        ensure_zsxq_api_origin(cdp, args, f"https://wx.zsxq.com/group/{group_id}")
         throttle_request(args)
         result = cdp.evaluate(expression, timeout=60) or {}
         if result.get("rateLimited"):
@@ -1226,9 +1495,9 @@ def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace |
     if not group_id:
         raise ExportError("无法从知识星球 group URL 中识别星球 ID")
     scope = group_scope_from_args(entry_url, args)
-    count = max(1, min(100, int((getattr(args, "group_page_size", DEFAULT_GROUP_BATCH_SIZE) if args else DEFAULT_GROUP_BATCH_SIZE) or DEFAULT_GROUP_BATCH_SIZE)))
-    max_pages = max(1, int((getattr(args, "group_max_pages", 200) if args else 200) or 200))
+    count = normalize_group_page_size(args)
     limit = normalize_group_limit(args)
+    max_pages = normalize_group_max_pages(args, limit, count)
     navigate_with_retry(cdp, entry_url, args)
 
     topics: list[dict[str, Any]] = []
@@ -1239,7 +1508,7 @@ def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace |
         check_stopped(args)
         result = fetch_group_topics_page(cdp, group_id, scope, end_time, count, args)
         if not result.get("ok"):
-            raise ExportError(result.get("text") or f"知识星球 group 主题列表读取失败：{group_id}")
+            raise ExportError(summarize_zsxq_api_failure(result, f"知识星球 group 主题列表读取失败：{group_id}"))
         batch = [topic for topic in result.get("topics") or [] if isinstance(topic, dict)]
         page_count += 1
         added = 0
@@ -1273,7 +1542,9 @@ def collect_group_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace |
     group_title = group_scope_title(scope)
     items: list[dict[str, Any]] = []
     for index, topic in enumerate(topics):
-        items.append(group_topic_to_item(topic, scope, index, include_raw=not getattr(args, "scan_toc", False)))
+        item = group_topic_to_item(topic, scope, index, include_raw=not getattr(args, "scan_toc", False))
+        item["entryUrl"] = entry_url
+        items.append(item)
     return {
         "href": entry_url,
         "title": f"知识星球 {group_title}",
@@ -1313,6 +1584,10 @@ def collect_toc(cdp: CDPClient, entry_url: str, args: argparse.Namespace | None 
         for item in group.get("topics") or []:
             item["key"] = f"toc:{item.get('groupIndex')}:{item.get('topicIndex')}"
             item["groupTitle"] = item.get("groupTitle") or group.get("groupTitle") or ""
+            item["entryUrl"] = toc.get("href") or entry_url
+            topic_id = str(item.get("topicId") or item.get("topicUid") or "").strip()
+            if topic_id and not item.get("topicUrl"):
+                item["topicUrl"] = f"https://wx.zsxq.com/topic/{topic_id}"
     toc["groups"] = groups
     toc["totalTopics"] = sum(len(group.get("topics") or []) for group in groups)
     return toc
@@ -1360,7 +1635,9 @@ def resolve_toc_item(cdp: CDPClient, source: dict[str, Any], args: argparse.Name
         except Exception as exc:
             if str(source.get("key") or "").startswith("group:"):
                 raise ExportError(f"知识星球 group 主题 API 读取失败：{source.get('title') or source.get('topicId') or source.get('key')} ({exc})") from exc
-            emit(args, f"目录 API 读取失败，改用页面点击：{source.get('title') or source.get('key')} ({exc})")
+            emit(args, f"目录 API 读取失败，改用页面点击：{source.get('title') or source.get('key')} ({exc})", event="log.message", level="warn")
+            if source.get("entryUrl"):
+                navigate_with_retry(cdp, str(source.get("entryUrl")), args)
     info = cdp.evaluate(f"({ZSXQ_OPEN_TOC_ITEM_JS})({json.dumps(source, ensure_ascii=False)})", timeout=60) or {}
     if not info.get("ok"):
         raise ExportError(f"无法打开目录条目：{source.get('groupTitle', '')} / {source.get('title', '')} ({info.get('error') or '未知错误'})")
@@ -1519,16 +1796,35 @@ def fetch_topic_info_api(cdp: CDPClient, topic_id: str, args: argparse.Namespace
         ));
         let data = {{}};
         try {{ data = parseZsxqJson(text); }} catch (err) {{}}
-        const antiCrawl = String(data && data.code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
+        const code = data && (data.code || data.error_code || data.status) || "";
+        const message = data && (data.msg || data.error || data.message || data.info) || "";
+        const textPreview = String(text || "").replace(/\\s+/g, " ").trim().slice(0, 300);
+        const authRequired = /登录|请登录|扫码|unauthorized|not authorized|未授权/i.test(message || textPreview);
+        const permissionDenied = /无权|权限|不是成员|加入星球|会员|购买|续费|已过期|forbidden/i.test(message || textPreview);
+        const antiCrawl = String(code || "") === "1059" || /非官方工具|official Skill|garden[.]zsxq[.]com[/]skill/i.test(text);
         return {{
           ok: !!data.succeeded,
           rateLimited: rateLimited || antiCrawl,
           status: r.status,
-          text: text.slice(0, 300),
+          code: String(code || ""),
+          message: String(message || ""),
+          authRequired,
+          permissionDenied,
+          text: textPreview,
+          attempts: [{{
+            url: 'https://api.zsxq.com/v2/topics/{topic_id}/info',
+            status: r.status,
+            ok: !!data.succeeded,
+            code: String(code || ""),
+            message: String(message || ""),
+            textPreview,
+            authRequired,
+            permissionDenied
+          }}],
           topic: data && data.resp_data && data.resp_data.topic || {{}}
         }};
       }} catch (err) {{
-        return {{ok: false, error: String(err)}};
+        return {{ok: false, error: String(err), attempts: [{{url: 'https://api.zsxq.com/v2/topics/{topic_id}/info', ok: false, error: String(err)}}]}};
       }}
     }})()
     """
@@ -1824,7 +2120,7 @@ def content_from_topic_api(
         lines.append("")
     markdown = "\n".join(lines).rstrip() + "\n"
 
-    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or source.get("topicId") or "")
+    topic_id = str(topic.get("topic_id") or topic.get("topic_uid") or source.get("topicId") or source.get("topicUid") or "")
     topic_url = f"https://wx.zsxq.com/topic/{topic_id}" if topic_id else ""
     content: dict[str, Any] = {
         "title": title,
@@ -1840,6 +2136,8 @@ def content_from_topic_api(
         "tocKey": source.get("key") or "",
         "tocGroup": source.get("groupTitle") or "",
         "tocTitle": source.get("title") or title,
+        "topicId": topic_id,
+        "topicUid": topic_id,
     }
     if getattr(args, "include_comments", False):
         attach_comments_to_content(content, comments if comments is not None else comments_from_topic_api(topic), True)
@@ -1858,7 +2156,7 @@ def fetch_topic_comments_api(
       const topicId = {json.dumps(topic_id)};
       const makeUrl = (base) => {{
         const url = new URL(base);
-        url.searchParams.set("count", "100");
+        url.searchParams.set("count", "{DEFAULT_COMMENT_BATCH_SIZE}");
         url.searchParams.set("sort", "asc");
         url.searchParams.set("sort_type", "by_create_time");
         url.searchParams.set("with_sticky", "true");
@@ -1952,11 +2250,12 @@ def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.
     raw_topic = source.get("rawTopic") if isinstance(source.get("rawTopic"), dict) else {}
     topic = raw_topic if topic_has_exportable_content(raw_topic) else {}
     if not topic:
+        ensure_zsxq_api_origin(cdp, args, str(source.get("entryUrl") or source.get("topicUrl") or "https://wx.zsxq.com/"))
         result = fetch_topic_info_api(cdp, topic_id, args)
         if result.get("rateLimited"):
             raise ExportError(f"目录条目触发请求频率限制：{source.get('title') or topic_id}")
         if not result.get("ok"):
-            raise ExportError(result.get("error") or result.get("text") or f"topic API 读取失败：{topic_id}")
+            raise ExportError(summarize_zsxq_api_failure(result, f"topic API 读取失败：{topic_id}"))
         topic = result.get("topic") or {}
     source_type, primary = topic_source(topic)
     has_video = any(bool(part.get("video")) for part in [primary])
@@ -1967,6 +2266,7 @@ def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.
     if getattr(args, "include_comments", False):
         comments = comments_from_topic_api(topic)
         if getattr(args, "fetch_full_comments", False):
+            ensure_zsxq_api_origin(cdp, args, str(source.get("entryUrl") or source.get("topicUrl") or "https://wx.zsxq.com/"))
             comments = fetch_topic_comments_api(cdp, topic_id, args) or comments
     topic_content = content_from_topic_api(topic, source, args, comments=comments)
     article_url = topic_content.get("articleUrl") or ""
@@ -1976,6 +2276,8 @@ def resolve_toc_item_api(cdp: CDPClient, source: dict[str, Any], args: argparse.
             attach_comments_to_content(article_content, comments or [], bool(getattr(args, "include_comments", False)))
             article_content["shortUrl"] = ""
             article_content["topicUrl"] = topic_content.get("topicUrl") or f"https://wx.zsxq.com/topic/{topic_id}"
+            article_content["topicId"] = topic_id
+            article_content["topicUid"] = topic_id
             article_content["sourceText"] = source.get("title") or topic_content.get("title") or topic_id
             article_content["tocKey"] = source.get("key") or ""
             article_content["tocGroup"] = source.get("groupTitle") or ""
@@ -2236,6 +2538,8 @@ def localize_images(
     timeout: int,
     keep_remote: bool,
     args: argparse.Namespace | None = None,
+    checkpoint: WandaoCheckpoint | None = None,
+    item_key: str = "",
 ) -> tuple[str, int, list[dict[str, str]]]:
     success = 0
     failures: list[dict[str, str]] = []
@@ -2243,11 +2547,26 @@ def localize_images(
         check_stopped(args)
         if not url.startswith(("http://", "https://")):
             continue
+        resource_key = zsxq_resource_key("image", url)
+        if checkpoint and resource_key:
+            checkpoint.upsert_resource(item_key, resource_key, "image", url)
         try:
+            if checkpoint and resource_key and checkpoint.resource_status(resource_key) == "completed":
+                record = checkpoint.resource_record(resource_key) or {}
+                local_path = record.get("local_path")
+                if local_path and Path(local_path).exists():
+                    markdown = markdown.replace(url, os.path.relpath(Path(local_path), md_path.parent).replace("\\", "/"))
+                    continue
+            if checkpoint and resource_key:
+                checkpoint.start_resource(resource_key)
             target = download_image(url, md_path.parent / "assets", timeout)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
+            if checkpoint and resource_key:
+                checkpoint.complete_resource(resource_key, local_path=str(target))
             success += 1
         except Exception as exc:
+            if checkpoint and resource_key:
+                checkpoint.fail_resource(resource_key, str(exc))
             failures.append({"url": url, "error": str(exc)})
             if not keep_remote:
                 markdown = markdown.replace(url, "")
@@ -2260,6 +2579,8 @@ def localize_files(
     md_path: Path,
     timeout: int,
     args: argparse.Namespace | None = None,
+    checkpoint: WandaoCheckpoint | None = None,
+    item_key: str = "",
 ) -> tuple[str, int, list[dict[str, str]]]:
     success = 0
     failures: list[dict[str, str]] = []
@@ -2268,11 +2589,26 @@ def localize_files(
         url = str(file_item.get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
             continue
+        resource_key = zsxq_resource_key("attachment", url)
+        if checkpoint and resource_key:
+            checkpoint.upsert_resource(item_key, resource_key, "attachment", url, metadata={"name": file_item.get("name", "")})
         try:
+            if checkpoint and resource_key and checkpoint.resource_status(resource_key) == "completed":
+                record = checkpoint.resource_record(resource_key) or {}
+                local_path = record.get("local_path")
+                if local_path and Path(local_path).exists():
+                    markdown = markdown.replace(url, os.path.relpath(Path(local_path), md_path.parent).replace("\\", "/"))
+                    continue
+            if checkpoint and resource_key:
+                checkpoint.start_resource(resource_key)
             target = download_file(url, file_item.get("name") or "知识星球附件", md_path.parent / "assets" / "files", timeout)
             markdown = markdown.replace(url, os.path.relpath(target, md_path.parent).replace("\\", "/"))
+            if checkpoint and resource_key:
+                checkpoint.complete_resource(resource_key, local_path=str(target))
             success += 1
         except Exception as exc:
+            if checkpoint and resource_key:
+                checkpoint.fail_resource(resource_key, str(exc))
             failures.append({"url": url, "name": file_item.get("name", ""), "error": str(exc)})
     return markdown, success, failures
 
@@ -2322,6 +2658,29 @@ def canonical_url_keys(*urls: str | None) -> set[str]:
         if normalized:
             keys.add(normalized)
     return keys
+
+
+def zsxq_item_key_from_topic_id(topic_id: str) -> str:
+    topic_id = str(topic_id or "").strip()
+    return f"zsxq:topic:{topic_id}" if topic_id else ""
+
+
+def zsxq_item_key_from_source(source: dict[str, Any]) -> str:
+    topic_id = str(source.get("topicId") or source.get("topicUid") or "").strip()
+    if topic_id:
+        return zsxq_item_key_from_topic_id(topic_id)
+    for value in (source.get("topicUrl"), source.get("articleUrl"), source.get("href"), source.get("key")):
+        text = str(value or "").strip()
+        if text:
+            return f"zsxq:source:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
+    return ""
+
+
+def zsxq_resource_key(resource_type: str, source: str) -> str:
+    source = str(source or "").strip()
+    if not source:
+        return ""
+    return f"{resource_type}:{hashlib.sha256(source.encode('utf-8')).hexdigest()}"
 
 
 def item_seen(item: dict[str, Any], seen_urls: set[str]) -> bool:
@@ -2549,6 +2908,18 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
     entry_url = normalize_entry_url(args.entry_url)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint: WandaoCheckpoint | None = None
+    checkpoint_file = str(getattr(args, "checkpoint_file", "") or "").strip()
+    if checkpoint_file:
+        checkpoint_path = Path(checkpoint_file).expanduser().resolve()
+        if getattr(args, "reset_checkpoint", False) and checkpoint_path.exists():
+            checkpoint_path.unlink()
+        checkpoint = WandaoCheckpoint.open(
+            checkpoint_path,
+            task_id=str(getattr(args, "checkpoint_task_id", "") or "default"),
+            provider_id="zsxq",
+            action="export",
+        )
     args.folder_link_threshold = max(0, int(getattr(args, "folder_link_threshold", 9) or 0))
     args.skip_video_topics = bool(getattr(args, "skip_video_topics", True))
     args.include_comments = bool(getattr(args, "include_comments", False))
@@ -2596,12 +2967,25 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 use_group_topics = is_group_entry_url(entry_url)
                 if use_group_topics:
                     args.limit = normalize_group_limit(args)
+                    warn_large_group_export(args, args.limit)
                     group_id = group_id_from_url(entry_url)
                     if not group_id:
                         raise ExportError("无法从知识星球 group URL 中识别星球 ID")
                     group_scope = group_scope_from_args(entry_url, args)
-                    group_page_size = max(1, min(100, int(getattr(args, "group_page_size", DEFAULT_GROUP_BATCH_SIZE) or DEFAULT_GROUP_BATCH_SIZE)))
-                    group_max_pages = max(1, int(getattr(args, "group_max_pages", 200) or 200))
+                    group_page_size = normalize_group_page_size(args)
+                    group_max_pages = normalize_group_max_pages(args, args.limit, group_page_size)
+                    if checkpoint:
+                        checkpoint.start_task(
+                            {
+                                "source": entry_url,
+                                "outputDir": str(output),
+                                "groupId": group_id,
+                                "groupScope": group_scope,
+                                "limit": args.limit,
+                                "pageSize": group_page_size,
+                                "resume": bool(getattr(args, "resume", False)),
+                            }
+                        )
                     navigate_with_retry(cdp, entry_url, args)
                     toc = {
                         "href": entry_url,
@@ -2786,6 +3170,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     args.download_timeout,
                     args.keep_remote_images,
                     args,
+                    checkpoint,
+                    checkpoint_item_key,
                 )
                 image_success += count
                 if img_errors:
@@ -2819,6 +3205,70 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         group_page_count = 0
         group_fetched_count = 0
         group_exhausted = not use_group_topics
+        if checkpoint and use_group_topics and getattr(args, "resume", False):
+            cursor = checkpoint.load_cursor(GROUP_CURSOR_NAME, {})
+            if (
+                str(cursor.get("group_id") or "") == str(group_id)
+                and str(cursor.get("scope") or "") == str(group_scope)
+            ):
+                group_end_time = str(cursor.get("end_time") or "")
+                group_page_count = int(cursor.get("page") or 0)
+                group_fetched_count = int(cursor.get("fetched_count") or 0)
+                group_exhausted = bool(cursor.get("exhausted")) and not checkpoint.pending_items()
+                emit(
+                    args,
+                    f"已从 checkpoint 恢复知识星球 Group 游标：page={group_page_count} fetched={group_fetched_count}。",
+                    event="task.resumed",
+                    level="info",
+                    checkpointFile=str(checkpoint.path),
+                    cursor=cursor,
+                )
+
+        def save_group_checkpoint_cursor(exhausted: bool = False) -> None:
+            if not checkpoint or not use_group_topics:
+                return
+            checkpoint.save_cursor(
+                GROUP_CURSOR_NAME,
+                {
+                    "group_id": group_id,
+                    "scope": group_scope,
+                    "end_time": group_end_time,
+                    "page": group_page_count,
+                    "fetched_count": group_fetched_count,
+                    "limit": args.limit,
+                    "page_size": group_page_size,
+                    "exhausted": exhausted,
+                },
+            )
+
+        def enqueue_checkpoint_pending_items() -> int:
+            if not checkpoint or not use_group_topics:
+                return 0
+            rows = checkpoint.failed_items() if getattr(args, "retry_failed", False) else checkpoint.pending_items()
+            added = 0
+            for row in rows:
+                metadata = json.loads(row.get("metadata_json") or "{}")
+                source = metadata.get("source") if isinstance(metadata, dict) else None
+                if not isinstance(source, dict):
+                    continue
+                item_key = str(row.get("item_key") or zsxq_item_key_from_source(source))
+                topic_id = str(source.get("topicId") or source.get("topicUid") or "").strip()
+                if topic_id:
+                    group_seen_topic_ids.add(topic_id)
+                if item_key and checkpoint.item_status(item_key) == "completed":
+                    continue
+                queue_links.append((dict(source, kind="toc", outputDir=str(output)), 1))
+                added += 1
+            if added:
+                emit(
+                    args,
+                    f"从 checkpoint 恢复 {added} 个未完成知识星球条目。",
+                    event="task.resumed",
+                    level="info",
+                    checkpointFile=str(checkpoint.path),
+                    stats={"pendingItems": added},
+                )
+            return added
 
         def enqueue_next_group_batch() -> int:
             nonlocal group_end_time, group_page_count, group_fetched_count, group_exhausted, toc
@@ -2841,7 +3291,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
 
             result = fetch_group_topics_page(cdp, group_id, group_scope, group_end_time, group_page_size, args)
             if not result.get("ok"):
-                raise ExportError(result.get("text") or f"知识星球 group 主题列表读取失败：{group_id}")
+                raise ExportError(summarize_zsxq_api_failure(result, f"知识星球 group 主题列表读取失败：{group_id}"))
             batch = [topic for topic in result.get("topics") or [] if isinstance(topic, dict)]
             group_page_count += 1
             added = 0
@@ -2852,9 +3302,20 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 if topic_id:
                     group_seen_topic_ids.add(topic_id)
                 item = group_topic_to_item(topic, group_scope, group_fetched_count, include_raw=True)
-                queue_links.append((dict(item, kind="toc", outputDir=str(output)), 1))
+                item["entryUrl"] = entry_url
+                item_key = zsxq_item_key_from_source(item)
+                if checkpoint and item_key:
+                    checkpoint.upsert_item(
+                        item_key,
+                        title=str(item.get("title") or item.get("text") or topic_id),
+                        source_url=str(item.get("topicUrl") or item.get("articleUrl") or entry_url),
+                        source_id=topic_id,
+                        metadata={"source": item},
+                    )
+                if not (checkpoint and item_key and checkpoint.item_status(item_key) == "completed"):
+                    queue_links.append((dict(item, kind="toc", outputDir=str(output)), 1))
+                    added += 1
                 group_fetched_count += 1
-                added += 1
                 if group_fetched_count >= args.limit:
                     break
 
@@ -2880,12 +3341,15 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
 
             if group_fetched_count >= args.limit or not batch or added == 0 or len(batch) < group_page_size:
                 group_exhausted = True
+                save_group_checkpoint_cursor(exhausted=True)
                 return added
             last_time = str(batch[-1].get("create_time") or "").strip()
             if not last_time or last_time == group_end_time:
                 group_exhausted = True
+                save_group_checkpoint_cursor(exhausted=True)
                 return added
             group_end_time = previous_zsxq_end_time(last_time)
+            save_group_checkpoint_cursor(exhausted=False)
             return added
 
         def child_output_dir_for_existing(md_path: Path, child_count: int) -> Path:
@@ -2922,7 +3386,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             return added
 
         if use_group_topics:
-            enqueue_next_group_batch()
+            restored_items = enqueue_checkpoint_pending_items()
+            if getattr(args, "retry_failed", False):
+                group_exhausted = True
+            if not restored_items:
+                enqueue_next_group_batch()
         elif use_toc:
             for toc_item in toc_items:
                 toc_key = str(toc_item.get("key") or "")
@@ -2947,6 +3415,18 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 break
             link, depth = queue_links.pop(0)
             href = link.get("href") or link.get("key") or ""
+            checkpoint_item_key = zsxq_item_key_from_source(link)
+            if checkpoint and checkpoint_item_key and checkpoint.item_status(checkpoint_item_key) == "completed" and not args.update_existing:
+                skipped += 1
+                continue
+            if checkpoint and checkpoint_item_key:
+                checkpoint.upsert_item(
+                    checkpoint_item_key,
+                    title=str(link.get("title") or link.get("text") or href),
+                    source_url=str(link.get("topicUrl") or link.get("articleUrl") or link.get("href") or ""),
+                    source_id=str(link.get("topicId") or link.get("topicUid") or ""),
+                    metadata={"source": {k: v for k, v in link.items() if k not in {"kind", "outputDir"}}},
+                )
             href_existing = next((existing[key] for key in canonical_url_keys(href) if key in existing), None)
             existing_update_path: Path | None = None
             if args.incremental and href_existing and not args.update_existing:
@@ -2958,20 +3438,40 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     if added:
                         deepened_existing += 1
                         queued_from_existing += added
+                    if checkpoint and checkpoint_item_key:
+                        checkpoint.complete_item(checkpoint_item_key, local_path=str(href_existing), metadata={"source": link, "skippedExisting": True})
                     skipped += 1
                     if depth == 1:
                         exported_rows.append({"title": link.get("title") or link.get("text") or href, "path": str(href_existing)})
                     continue
             try:
+                if checkpoint and checkpoint_item_key:
+                    checkpoint.start_item(checkpoint_item_key, "content")
                 if link.get("kind") == "toc":
                     item = resolve_toc_item(cdp, link, args)
                     already_seen = bool(canonical_url_keys(item.get("tocKey")) & seen_urls)
                 else:
                     item = resolve_link(cdp, link, args)
                     already_seen = item_seen(item, seen_urls)
+                resolved_item_key = zsxq_item_key_from_source(item) or checkpoint_item_key
+                if checkpoint and resolved_item_key and resolved_item_key != checkpoint_item_key:
+                    previous_item_key = checkpoint_item_key
+                    checkpoint.upsert_item(
+                        resolved_item_key,
+                        title=str(item.get("title") or link.get("title") or link.get("text") or href),
+                        source_url=str(item.get("topicUrl") or item.get("articleUrl") or href),
+                        source_id=str(item.get("topicId") or item.get("topicUid") or ""),
+                        metadata={"source": item},
+                    )
+                    checkpoint.start_item(resolved_item_key, "content")
+                    if previous_item_key:
+                        checkpoint.skip_item(previous_item_key, f"resolved-to:{resolved_item_key}")
+                    checkpoint_item_key = resolved_item_key
                 mark_item_seen(item, seen_urls)
                 seen_urls.update(canonical_url_keys(item.get("tocKey")))
                 if already_seen and not args.update_existing:
+                    if checkpoint and checkpoint_item_key:
+                        checkpoint.skip_item(checkpoint_item_key, "duplicate")
                     skipped += 1
                     continue
                 if link.get("kind") == "toc":
@@ -3001,6 +3501,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         if added:
                             deepened_existing += 1
                             queued_from_existing += added
+                        if checkpoint and checkpoint_item_key:
+                            checkpoint.complete_item(checkpoint_item_key, local_path=str(key_existing), metadata={"source": item, "skippedExisting": True})
                         skipped += 1
                         if depth == 1:
                             exported_rows.append({"title": item.get("title") or link.get("title") or link.get("text") or href, "path": str(key_existing)})
@@ -3064,6 +3566,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                         md_path,
                         args.download_timeout,
                         args,
+                        checkpoint,
+                        checkpoint_item_key,
                     )
                     file_success += file_count
                     if file_errors:
@@ -3079,6 +3583,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                                 error={"message": failure.get("error", "")},
                             )
                 md_path.write_text(markdown, encoding="utf-8")
+                if checkpoint and checkpoint_item_key:
+                    checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
                 exported += 1
@@ -3112,6 +3618,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 skipped += 1
                 if exc.reason == "video-topic":
                     skipped_video += 1
+                if checkpoint and checkpoint_item_key:
+                    checkpoint.skip_item(checkpoint_item_key, exc.reason)
                 emit(
                     args,
                     f"跳过：{exc.title or href} ({exc.reason})",
@@ -3121,6 +3629,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     error={"message": exc.reason},
                 )
             except Exception as exc:
+                if checkpoint and checkpoint_item_key:
+                    checkpoint.fail_item(checkpoint_item_key, str(exc))
                 failures.append({"title": link.get("text") or "", "href": href, "error": str(exc)})
                 emit(
                     args,
@@ -3215,6 +3725,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             "attachmentFailures": file_failures,
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
+        if checkpoint:
+            report["checkpoint"] = checkpoint.stats()
         report_path = output / "00-导出报告.json"
         report = finalize_report(report, provider="zsxq", mode="export", report_file=report_path, output=output)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3233,8 +3745,21 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 "rateLimitEvents": report.get("rateLimitEvents", 0),
             },
         )
+        if checkpoint:
+            if stopped:
+                checkpoint.fail_task("stopped", status="stopped")
+            elif failures:
+                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            else:
+                checkpoint.complete_task(report)
         return report
+    except Exception as exc:
+        if checkpoint:
+            checkpoint.fail_task(str(exc))
+        raise
     finally:
+        if checkpoint:
+            checkpoint.close()
         cdp.close()
         if chrome_proc and args.close_started_chrome:
             chrome_proc.terminate()
@@ -3284,6 +3809,28 @@ def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], No
         check_stopped(args)
         result = save_auth_state(cdp, auth_file, entry_url)
         emit(args, f"Saved {result['cookieCount']} auth cookies to {auth_file}")
+        auth_check = validate_zsxq_auth(cdp, args)
+        result["authCheck"] = auth_check
+        if auth_check.get("ok"):
+            account = auth_check.get("account") or {}
+            result["account"] = account
+            annotate_auth_state(auth_file, account)
+            display_name = str(account.get("name") or account.get("userId") or "当前账号")
+            emit(
+                args,
+                f"知识星球账号验证成功：{display_name}",
+                event="auth.verified",
+                level="success",
+                account=account,
+            )
+        else:
+            emit(
+                args,
+                summarize_zsxq_api_failure(auth_check, "知识星球账号验证未通过"),
+                event="auth.warning",
+                level="warn",
+                result=auth_check,
+            )
         return result
     finally:
         cdp.close()
@@ -3729,6 +4276,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait-login", action="store_true", help="Pause for manual login before exporting")
     parser.add_argument("--incremental", action="store_true", help="Only export documents missing from local Markdown")
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
+    parser.add_argument("--checkpoint-file", help="SQLite checkpoint file for precise resume")
+    parser.add_argument("--checkpoint-task-id", default="default", help="Task id inside the checkpoint database")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint when available")
+    parser.add_argument("--retry-failed", action="store_true", help="Only retry failed checkpoint items")
+    parser.add_argument("--reset-checkpoint", action="store_true", help="Delete the checkpoint before starting")
     parser.add_argument("--no-overview", dest="include_overview", action="store_false", help="Do not export the entry/column body itself")
     parser.set_defaults(include_overview=True)
     parser.add_argument("--link-pattern", help="Regex filter for link text or href, for example AI大模型Ragent项目")
@@ -3755,8 +4307,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=9,
         help="If an exported page has at least this many ZSXQ links, place linked pages in a same-name folder. 0 disables this.",
     )
-    parser.add_argument("--request-delay", type=float, default=1.8, help="Seconds to wait before each ZSXQ navigation/API request")
-    parser.add_argument("--request-jitter", type=float, default=1.6, help="Extra random seconds added to request delay")
+    parser.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY, help="Seconds to wait before each ZSXQ navigation/API request")
+    parser.add_argument("--request-jitter", type=float, default=DEFAULT_REQUEST_JITTER, help="Extra random seconds added to request delay")
     parser.add_argument("--rate-limit-pause", type=float, default=90, help="Seconds to pause after Too Many Requests before retrying")
     parser.add_argument("--rate-limit-retries", type=int, default=5, help="Retries for the same URL/API call after Too Many Requests")
     parser.add_argument("--long-sleep-after", type=int, default=25, help="Enable long sleep only after this many successfully exported docs. 0 disables it")
@@ -3770,15 +4322,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-comments", dest="include_comments", action="store_false", help="Do not export ZSXQ comments")
     parser.set_defaults(include_comments=False)
     parser.add_argument("--fetch-full-comments", action="store_true", help="Fetch the full comments API for each topic. Slower and easier to hit ZSXQ rate limits")
-    parser.add_argument("--comment-request-delay", type=float, default=3.0, help="Minimum seconds to wait before each full comments API request")
-    parser.add_argument("--comment-request-jitter", type=float, default=2.0, help="Extra random seconds added to full comments API request delay")
+    parser.add_argument("--comment-request-delay", type=float, default=DEFAULT_COMMENT_REQUEST_DELAY, help="Minimum seconds to wait before each full comments API request")
+    parser.add_argument("--comment-request-jitter", type=float, default=DEFAULT_COMMENT_REQUEST_JITTER, help="Extra random seconds added to full comments API request delay")
     parser.add_argument("--download-files", action="store_true", help="Download ZSXQ post attachments and rewrite Markdown links to local files")
     parser.add_argument("--download-timeout", type=int, default=45, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=10, help="Print progress after N documents")
     parser.add_argument("--keep-remote-images", action="store_true", default=True, help="Keep remote image URLs when download fails")
     parser.add_argument("--drop-failed-images", dest="keep_remote_images", action="store_false", help="Remove image URL when download fails")
     parser.add_argument("--close-started-chrome", action="store_true", help="Close Chrome started by this script after export")
-    return parser.parse_args(argv)
+    return apply_zsxq_safety_defaults(parser.parse_args(argv))
 
 
 def main(argv: list[str]) -> int:

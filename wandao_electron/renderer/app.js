@@ -228,6 +228,12 @@ const ERROR_RULES = [
     suggestion: '请调大请求延迟和随机浮动，等待一段时间后再继续，必要时使用增量模式补齐缺失内容。'
   },
   {
+    category: '任务参数不合适',
+    pattern: /(无效的count|invalid count|code=14001|14001)/i,
+    title: '单批读取数量超过平台允许范围',
+    suggestion: '请更新到新版后重试；新版会把知识星球 Group 单批读取控制在安全范围内。'
+  },
+  {
     category: '页面结构变化',
     pattern: /(selector|querySelector|Cannot read properties|页面结构|目录条目|找不到元素|未找到按钮|无法定位|DOM|XPath|element not found)/i,
     title: '页面结构可能变化',
@@ -3591,6 +3597,39 @@ function initializeTocInteraction(toolId) {
   }
 }
 
+function normalizeZsxqTimingArg(input, fallback = 2.5, min = 1) {
+  const raw = input?.value ?? '';
+  if (raw === '') return String(fallback);
+  const value = Number.parseFloat(raw);
+  if (!Number.isFinite(value)) return String(fallback);
+  return String(Math.max(min, value));
+}
+
+function zsxqGroupLimitValue() {
+  const raw = document.getElementById('zsxq-group-limit')?.value || '50';
+  const limit = Number.parseInt(raw, 10);
+  return Number.isFinite(limit) ? limit : 50;
+}
+
+function confirmLargeZsxqGroupExport(toolId) {
+  if (toolId !== 'zsxq-group') return true;
+  const limit = zsxqGroupLimitValue();
+  if (limit <= 1000) return true;
+  return window.confirm(
+    `本次计划导出 ${limit} 条知识星球帖子。\n\n` +
+    '连续长时间导出可能触发平台风控，严重时可能影响账号使用甚至被封号。\n' +
+    '建议分批导出，并尽量不要让单次任务超过 24 小时。\n\n' +
+    '确认继续导出吗？'
+  );
+}
+
+function providerCheckpointFile(toolId, output) {
+  const provider = TOOLS[toolId] || {};
+  if (!provider.checkpoint?.supported || !output) return '';
+  const root = String(output).replace(/[\\\/]+$/, '');
+  return `${root}/.wandao/checkpoint.sqlite`;
+}
+
 function buildExportArgs(toolId, options = {}) {
   const config = TOOLS[toolId];
   const prefix = toolId;
@@ -3626,16 +3665,21 @@ function buildExportArgs(toolId, options = {}) {
 
   const delayInput = document.getElementById(`${prefix}-delay`);
   if (delayInput && delayInput.value) {
-    args.push('--request-delay', delayInput.value);
+    args.push('--request-delay', isZsxqProvider(toolId) ? normalizeZsxqTimingArg(delayInput) : delayInput.value);
   }
 
   const jitterInput = document.getElementById(`${prefix}-jitter`);
   if (jitterInput && jitterInput.value) {
-    args.push('--request-jitter', jitterInput.value);
+    args.push('--request-jitter', isZsxqProvider(toolId) ? normalizeZsxqTimingArg(jitterInput) : jitterInput.value);
   }
 
   if (!forScan) {
     args.push('--progress-every', '1');
+  }
+
+  const checkpointFile = providerCheckpointFile(toolId, output);
+  if (!forScan && checkpointFile) {
+    args.push('--checkpoint-file', checkpointFile, '--resume');
   }
 
   if (isZsxqProvider(toolId)) {
@@ -3650,12 +3694,9 @@ function buildExportArgs(toolId, options = {}) {
 
     const limitInput = document.getElementById(`${prefix}-limit`)?.value;
     if (!forScan && toolId === 'zsxq-group') {
-      const limit = Number.parseInt(limitInput || '50', 10);
+      const limit = zsxqGroupLimitValue();
       if (!Number.isFinite(limit) || limit < 1) {
         throw new Error('知识星球 Group 单次导出数量至少为 1 条。');
-      }
-      if (limit > 500) {
-        throw new Error('知识星球 Group 单次最多导出 500 条。大星球请分批导出，避免触发风控。');
       }
       args.push('--limit', String(limit));
     } else if (!forScan && limitInput !== undefined && limitInput !== '') {
@@ -4067,6 +4108,7 @@ async function handleExport(toolId) {
     alert(formatError(error));
     return;
   }
+  if (!confirmLargeZsxqGroupExport(toolId)) return;
   if (!confirmProviderExecution(config)) return;
 
   setRunning(true, toolId);

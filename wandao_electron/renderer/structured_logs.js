@@ -63,6 +63,9 @@
       const stats = event.stats || {};
 
       if (eventName === 'log.message') {
+        if (/API .*失败.*(改用|兜底)|接口.*失败.*(改用|兜底)/i.test(message)) {
+          return { type: type === 'error' ? 'warn' : type, message: compactDiagnostic(message, 220) };
+        }
         return summarizePythonLine(message);
       }
       if (eventName === 'task.started') {

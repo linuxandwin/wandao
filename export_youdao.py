@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -1045,6 +1046,7 @@ def emit_progress(
 def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
     output = Path(args.output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint = open_checkpoint_from_args(args, "youdao", "export")
     client = YoudaoClient(auth_path_from_args(args), args)
     nodes, root_id = build_remote_tree(client)
     selected = set(args.selected_doc_ids or [])
@@ -1055,6 +1057,28 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         if not node.is_dir
     }
     docs = [node for node in nodes if not node.is_dir and (not selected or node.id in selected)]
+    if checkpoint:
+        checkpoint.start_task(
+            {
+                "source": YOUDAO_WEB_URL,
+                "outputDir": str(output),
+                "rootId": root_id,
+                "totalDocs": len(docs),
+                "resume": bool(getattr(args, "resume", False)),
+                "retryFailed": bool(getattr(args, "retry_failed", False)),
+            }
+        )
+        for node in docs:
+            checkpoint.upsert_item(
+                f"youdao:node:{node.id}",
+                title=node.title,
+                source_url="/".join(node.path_parts),
+                source_id=node.id,
+                parent_key=node.parent_id,
+                metadata={"id": node.id, "path": node.path_parts, "isNoteLike": node.is_note_like},
+            )
+        if getattr(args, "retry_failed", False):
+            docs = [node for node in docs if checkpoint.item_status(f"youdao:node:{node.id}") == "failed"]
     total = len(docs)
     exported = 0
     skipped = 0
@@ -1075,8 +1099,25 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
 
     for index, node in enumerate(docs, start=1):
         md_or_file_path = local_paths[node.id]
+        item_key = f"youdao:node:{node.id}"
         try:
+            if checkpoint and getattr(args, "resume", False) and not args.update_existing and checkpoint.item_status(item_key) == "completed":
+                row_file = md_or_file_path.with_suffix(".md") if node.is_note_like else md_or_file_path
+                skipped += 1
+                if row_file.exists():
+                    rows.append(
+                        {
+                            "title": node.title,
+                            "file": str(row_file),
+                            "path": "/".join(node.path_parts),
+                            "level": len(node.path_parts),
+                        }
+                    )
+                emit_progress(index, total, exported, skipped, len(failures), stats)
+                continue
             if should_skip_existing(md_or_file_path, node, args):
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(md_or_file_path), metadata={"id": node.id, "skippedExisting": True})
                 skipped += 1
                 rows.append(
                     {
@@ -1089,6 +1130,8 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                 emit_progress(index, total, exported, skipped, len(failures), stats)
                 continue
 
+            if checkpoint:
+                checkpoint.start_item(item_key, "content")
             emit(
                 f"开始导出有道云笔记：{node.title}",
                 event="document.export.started",
@@ -1111,6 +1154,8 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                 row_file = file_path
 
             exported += 1
+            if checkpoint:
+                checkpoint.complete_item(item_key, local_path=str(row_file), metadata={"id": node.id, "path": node.path_parts})
             rows.append(
                 {
                     "title": node.title,
@@ -1125,6 +1170,8 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
                 doc={"id": node.id, "title": node.title, "index": index, "path": str(row_file)},
             )
         except Exception as exc:
+            if checkpoint:
+                checkpoint.fail_item(item_key, str(exc))
             failures.append({"id": node.id, "title": node.title, "path": "/".join(node.path_parts), "error": str(exc)})
             emit(
                 f"有道云笔记导出失败：{node.title}：{exc}",
@@ -1149,9 +1196,17 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
         "requestCount": client.request_count,
         **stats,
     }
+    if checkpoint:
+        report["checkpoint"] = checkpoint.stats()
     report_path = output / "00-导出报告.json"
     report = finalize_report(report, provider="youdao", mode="export", report_file=report_path, output=output)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if checkpoint:
+        if failures:
+            checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+        else:
+            checkpoint.complete_task(report)
+        checkpoint.close()
     emit(
         "有道云笔记导出完成" if not failures else f"有道云笔记导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",
@@ -1237,6 +1292,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="只导出指定笔记 ID，可重复")
     parser.add_argument("--incremental", action="store_true", help="已有文件则跳过")
     parser.add_argument("--update-existing", action="store_true", help="配合 --incremental 时也更新已有文件")
+    add_checkpoint_args(parser)
     parser.add_argument("--progress-every", type=int, default=1, help="每处理多少篇输出一次进度")
     parser.add_argument("--request-delay", type=float, default=0.8, help="每次请求前固定等待秒数")
     parser.add_argument("--request-jitter", type=float, default=0.4, help="每次请求额外随机等待秒数")

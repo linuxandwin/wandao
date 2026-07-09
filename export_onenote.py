@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -788,16 +789,48 @@ def write_publish_list(items: list[tuple[TocNode, Path]], path: Path) -> None:
 def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[TocNode]) -> dict[str, Any]:
     output = Path(args.output).expanduser().resolve() if args.output else default_output_dir()
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint = open_checkpoint_from_args(args, "onenote", "export")
     pages_by_id = {page.id: page for page in pages}
     planner = PathPlanner(output, pages_by_id, child_page_ids(pages))
     selected = selected_pages(args, pages)
     helper_dir = Path(args.helper_dir).expanduser().resolve() if args.helper_dir else None
 
+    if checkpoint:
+        checkpoint.start_task(
+            {
+                "source": "local-onenote",
+                "outputDir": str(output),
+                "totalDocs": len(selected),
+                "resume": bool(getattr(args, "resume", False)),
+                "retryFailed": bool(getattr(args, "retry_failed", False)),
+            }
+        )
+        for page in selected:
+            checkpoint.upsert_item(
+                f"onenote:page:{page.id}",
+                title=page.title,
+                source_url=page.path,
+                source_id=page.id,
+                parent_key=page.parent_id,
+                metadata={"id": page.id, "path": page.path, "level": page.level},
+            )
+        if getattr(args, "retry_failed", False):
+            selected = [page for page in selected if checkpoint.item_status(f"onenote:page:{page.id}") == "failed"]
+
     targets: list[tuple[TocNode, Path]] = []
     skipped = 0
     for page in selected:
         md_path = planner.markdown_path(page)
+        if checkpoint and getattr(args, "resume", False) and checkpoint.item_status(f"onenote:page:{page.id}") == "completed":
+            skipped += 1
+            continue
         if args.incremental and md_path.exists():
+            if checkpoint:
+                checkpoint.complete_item(
+                    f"onenote:page:{page.id}",
+                    local_path=str(md_path),
+                    metadata={"id": page.id, "skippedExisting": True},
+                )
             skipped += 1
             continue
         targets.append((page, md_path))
@@ -840,7 +873,10 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         mht_by_id = {page.id: mht for page, mht in publish_items}
         total = len(targets)
         for index, (page, md_path) in enumerate(targets, start=1):
+            item_key = f"onenote:page:{page.id}"
             try:
+                if checkpoint:
+                    checkpoint.start_item(item_key, "convert")
                 emit(
                     f"开始转换 OneNote 页面：{page.title}",
                     event="document.export.started",
@@ -850,6 +886,8 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
                 image_success += stats["images"]
                 attachment_success += stats["attachments"]
                 exported += 1
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"id": page.id})
                 emit(
                     f"OneNote 页面导出完成：{page.title}",
                     event="document.export.completed",
@@ -861,6 +899,8 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
                     },
                 )
             except Exception as exc:  # noqa: BLE001 - keep exporting other pages.
+                if checkpoint:
+                    checkpoint.fail_item(item_key, str(exc))
                 failures.append({
                     "id": page.id,
                     "title": page.title,
@@ -905,9 +945,17 @@ def export_onenote(args: argparse.Namespace, nodes: list[TocNode], pages: list[T
         "elapsedSeconds": round(time.time() - started, 2),
         "keptMht": str(mht_root) if args.keep_mht else "",
     }
+    if checkpoint:
+        report["checkpoint"] = checkpoint.stats()
     report_path = output / "00-导出报告.json"
     report = finalize_report(report, provider="onenote", mode="export", report_file=report_path, output=output)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if checkpoint:
+        if failures:
+            checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+        else:
+            checkpoint.complete_task(report)
+        checkpoint.close()
     emit(
         "OneNote 导出完成" if not failures else f"OneNote 导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",
@@ -932,6 +980,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", default=[], help="只导出指定页面 ID，可重复")
     parser.add_argument("--doc-id-file", default="", help="从文件读取要导出的页面 ID，JSON 数组或逐行文本均可")
     parser.add_argument("--incremental", action="store_true", help="目标 Markdown 已存在时跳过")
+    add_checkpoint_args(parser)
     parser.add_argument("--progress-every", type=int, default=1, help="每处理多少篇输出一次进度")
     parser.add_argument("--request-delay", default="0", help=argparse.SUPPRESS)
     parser.add_argument("--request-jitter", default="0", help=argparse.SUPPRESS)

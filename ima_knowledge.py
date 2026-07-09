@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -583,8 +584,30 @@ def selected_entries(entries: list[KnowledgeEntry], doc_ids: list[str]) -> list[
 
 def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, Any]:
     output = Path(args.output or default_output_dir()).resolve()
+    checkpoint = open_checkpoint_from_args(args, "ima", "export")
     kbs, entries = scan_remote_tree(client, args)
     docs = selected_entries(entries, args.doc_id or [])
+    if checkpoint:
+        checkpoint.start_task(
+            {
+                "source": str(args.knowledge_base_id or ""),
+                "outputDir": str(output),
+                "totalDocs": len(docs),
+                "resume": bool(getattr(args, "resume", False)),
+                "retryFailed": bool(getattr(args, "retry_failed", False)),
+            }
+        )
+        for entry in docs:
+            checkpoint.upsert_item(
+                f"ima:entry:{entry.export_id}",
+                title=entry.title,
+                source_url=entry.path,
+                source_id=entry.export_id,
+                parent_key=entry.parent_id,
+                metadata={"exportId": entry.export_id, "mediaId": entry.media_id, "knowledgeBaseId": entry.knowledge_base_id},
+            )
+        if getattr(args, "retry_failed", False):
+            docs = [entry for entry in docs if checkpoint.item_status(f"ima:entry:{entry.export_id}") == "failed"]
     total = len(docs)
     exported = 0
     skipped = 0
@@ -598,7 +621,13 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
     )
     for index, entry in enumerate(docs, 1):
         check_stopped(args)
+        item_key = f"ima:entry:{entry.export_id}"
         try:
+            if checkpoint and getattr(args, "resume", False) and checkpoint.item_status(item_key) == "completed":
+                skipped += 1
+                continue
+            if checkpoint:
+                checkpoint.start_item(item_key, "download")
             emit(
                 f"开始导出 ima 文件：{entry.title}",
                 event="document.export.started",
@@ -607,6 +636,8 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
             status, path, reason = save_media_entry(client, entry, output)
             if status.startswith("exported"):
                 exported += 1
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(path or ""), metadata={"exportId": entry.export_id})
                 emit(
                     f"ima 文件导出完成：{entry.title}",
                     event="document.export.completed",
@@ -615,6 +646,8 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
             else:
                 skipped += 1
                 if reason:
+                    if checkpoint:
+                        checkpoint.fail_item(item_key, reason)
                     failures.append({"title": entry.title, "reason": reason})
                     emit(
                         f"ima 文件跳过：{entry.title}：{reason}",
@@ -623,8 +656,12 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
                         doc={"id": entry.export_id, "title": entry.title, "index": index},
                         error={"message": reason},
                     )
+                elif checkpoint:
+                    checkpoint.skip_item(item_key, status)
         except Exception as exc:
             skipped += 1
+            if checkpoint:
+                checkpoint.fail_item(item_key, str(exc))
             failures.append({"title": entry.title, "reason": str(exc)})
             emit(
                 f"ima 文件导出失败：{entry.title}：{exc}",
@@ -653,7 +690,15 @@ def export_selected(client: ImaClient, args: argparse.Namespace) -> dict[str, An
         "elapsedSeconds": round(time.time() - started, 1),
         "requestCount": int(getattr(args, "_request_count", 0) or 0),
     }
+    if checkpoint:
+        report["checkpoint"] = checkpoint.stats()
     report = finalize_report(report, provider="ima", mode="export", output=output)
+    if checkpoint:
+        if failures:
+            checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+        else:
+            checkpoint.complete_task(report)
+        checkpoint.close()
     emit(
         "ima 导出完成" if not failures else f"ima 导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",
@@ -1058,6 +1103,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--request-delay", type=float, default=0.2, help="API 请求固定延迟秒")
     parser.add_argument("--request-jitter", type=float, default=0.2, help="API 请求随机浮动秒")
     parser.add_argument("--progress-every", type=int, default=10, help="每处理多少条输出一次进度")
+    add_checkpoint_args(parser)
     return parser.parse_args(argv)
 
 

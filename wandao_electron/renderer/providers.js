@@ -63,7 +63,9 @@
       urlParam: '--entry-url',
       outputParam: '--output',
       defaults: { output: 'exports/zsxq-group' },
-      capabilities: { login: true, scanToc: false }
+      capabilities: { login: true, scanToc: false, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }
     },
     {
       id: 'zsxq-column',
@@ -87,7 +89,9 @@
       urlParam: '--book-url',
       outputParam: '--output',
       defaults: { output: 'exports/yuque' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'feishu-export',
@@ -99,7 +103,9 @@
       urlParam: '--wiki-url',
       outputParam: '--output',
       defaults: { output: 'exports/feishu' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'aliyun',
@@ -111,7 +117,9 @@
       urlParam: '--workspace-url',
       outputParam: '--output',
       defaults: { output: 'exports/aliyun-thoughts', delay: '0.1', jitter: '0' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'yinxiang',
@@ -123,7 +131,9 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/yinxiang' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'youdao',
@@ -135,7 +145,9 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/youdao' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'wiz',
@@ -147,7 +159,9 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/wiz', delay: '0', jitter: '0' },
-      capabilities: { login: true, scanToc: true }
+      capabilities: { login: true, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'onenote',
@@ -159,7 +173,9 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/onenote', delay: '0', jitter: '0' },
-      capabilities: { login: false, scanToc: true }
+      capabilities: { login: false, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'ima-export',
@@ -171,7 +187,9 @@
       outputParam: '--output',
       noUrl: true,
       defaults: { output: 'exports/ima' },
-      capabilities: { login: false, scanToc: true }
+      capabilities: { login: false, scanToc: true, retryFailures: true },
+      retryFailures: { arg: '--retry-failed', label: '只重试失败项' },
+      checkpoint: { supported: true, strategy: 'items', resourceTracking: false }
     },
     {
       id: 'yuque-import',

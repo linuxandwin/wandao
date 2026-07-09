@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -503,8 +504,29 @@ def note_markdown(note_el: ET.Element, md_path: Path) -> tuple[str, str]:
 def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint = open_checkpoint_from_args(args, "yinxiang", "export")
     selected = set(args.doc_id or [])
     enex_files = sorted(enex_dir.rglob("*.enex"))
+    if checkpoint:
+        checkpoint.start_task(
+            {
+                "source": str(enex_dir),
+                "outputDir": str(output),
+                "totalDocs": len(enex_files),
+                "resume": bool(getattr(args, "resume", False)),
+                "retryFailed": bool(getattr(args, "retry_failed", False)),
+            }
+        )
+        for enex_file in enex_files:
+            relative = enex_file.relative_to(enex_dir).as_posix()
+            item_key = f"yinxiang:enex:{hashlib.sha1(relative.encode('utf-8')).hexdigest()}"
+            checkpoint.upsert_item(item_key, title=Path(relative).stem, source_url=relative, metadata={"relative": relative})
+        if getattr(args, "retry_failed", False):
+            enex_files = [
+                enex_file
+                for enex_file in enex_files
+                if checkpoint.item_status(f"yinxiang:enex:{hashlib.sha1(enex_file.relative_to(enex_dir).as_posix().encode('utf-8')).hexdigest()}") == "failed"
+            ]
 
     exported = 0
     skipped = 0
@@ -521,10 +543,18 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
 
     for index, enex_file in enumerate(enex_files, start=1):
         relative = enex_file.relative_to(enex_dir)
+        item_key = f"yinxiang:enex:{hashlib.sha1(relative.as_posix().encode('utf-8')).hexdigest()}"
         md_path = output / relative.with_suffix(".md")
         md_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            if checkpoint and getattr(args, "resume", False) and checkpoint.item_status(item_key) == "completed":
+                skipped += 1
+                if md_path.exists():
+                    md_files.append(md_path)
+                continue
+            if checkpoint:
+                checkpoint.start_item(item_key, "convert")
             emit(
                 f"开始转换印象笔记：{relative.as_posix()}",
                 event="document.export.started",
@@ -533,26 +563,36 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
             root = ET.parse(enex_file).getroot()
             notes = list(root.findall("note"))
             if not notes:
+                if checkpoint:
+                    checkpoint.skip_item(item_key, "empty-enex")
                 skipped += 1
                 continue
             note_el = notes[0]
             guid = note_el.findtext("guid") or ""
             if selected and guid not in selected:
+                if checkpoint:
+                    checkpoint.skip_item(item_key, "not-selected")
                 skipped += 1
                 continue
             if args.incremental and md_path.exists():
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"guid": guid, "skippedExisting": True})
                 skipped += 1
                 continue
             md_text, guid = note_markdown(note_el, md_path)
             md_path.write_text(md_text, encoding="utf-8")
             md_files.append(md_path)
             exported += 1
+            if checkpoint:
+                checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"guid": guid, "relative": relative.as_posix()})
             emit(
                 f"印象笔记转换完成：{relative.as_posix()}",
                 event="document.export.completed",
                 doc={"id": guid, "path": relative.as_posix(), "index": index, "output": str(md_path)},
             )
         except Exception as exc:
+            if checkpoint:
+                checkpoint.fail_item(item_key, str(exc))
             failures.append({"file": str(enex_file), "error": str(exc)})
             emit(
                 f"印象笔记转换失败：{relative.as_posix()}：{exc}",
@@ -583,7 +623,15 @@ def convert_enex(args: argparse.Namespace, enex_dir: Path) -> dict[str, Any]:
         "failureCount": len(failures),
         "failures": failures,
     }
+    if checkpoint:
+        report["checkpoint"] = checkpoint.stats()
     report = finalize_report(report, provider="yinxiang", mode="export", output=output)
+    if checkpoint:
+        if failures:
+            checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+        else:
+            checkpoint.complete_task(report)
+        checkpoint.close()
     emit(
         "印象笔记导出完成" if not failures else f"印象笔记导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",
@@ -713,6 +761,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--scan-toc", action="store_true", help="读取本地同步库目录")
     parser.add_argument("--doc-id", action="append", default=[], help="只导出指定笔记 GUID，可重复")
     parser.add_argument("--incremental", action="store_true", help="已有 Markdown 文件时跳过")
+    add_checkpoint_args(parser)
     parser.add_argument("--force", action="store_true", help="重新初始化本地同步库")
     parser.add_argument("--no-sync", action="store_true", help="导出前不重新同步")
     parser.add_argument("--include-trash", action="store_true", help="包含废纸篓笔记")

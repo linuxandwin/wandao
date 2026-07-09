@@ -110,15 +110,38 @@ class ElectronHealthTests(unittest.TestCase):
 
         self.assertIn("id: 'zsxq-group'", providers_js)
         self.assertIn("id: 'zsxq-column'", providers_js)
-        self.assertIn("capabilities: { login: true, scanToc: false }", providers_js)
+        self.assertIn("capabilities: { login: true, scanToc: false, retryFailures: true }", providers_js)
         self.assertIn("capabilities: { login: true, scanToc: true }", providers_js)
+        self.assertIn("checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }", providers_js)
+        self.assertIn("retryFailures: { arg: '--retry-failed'", providers_js)
         self.assertIn('template id="template-zsxq-group"', index_html)
         self.assertIn('template id="template-zsxq-column"', index_html)
         self.assertIn('id="zsxq-group-download-files"', index_html)
         self.assertIn('id="zsxq-column-download-files"', index_html)
-        self.assertIn("知识星球 Group 单次最多导出 500 条", app_js)
+        self.assertIn("confirmLargeZsxqGroupExport", app_js)
+        self.assertIn("function providerCheckpointFile", app_js)
+        self.assertIn("args.push('--checkpoint-file', checkpointFile, '--resume')", app_js)
+        self.assertIn("limit <= 1000", app_js)
+        self.assertIn("单次任务超过 24 小时", app_js)
+        self.assertNotIn("知识星球 Group 单次最多导出 500 条", app_js)
         self.assertIn("validateZsxqUrlForTool", app_js)
         self.assertIn("toolId === 'zsxq-column'", app_js)
+
+    def test_checkpoint_is_declared_for_adapted_export_providers_only(self) -> None:
+        providers_js = read_text("wandao_electron/renderer/providers.js")
+        adapted_ids = ["yuque", "feishu-export", "aliyun", "yinxiang", "youdao", "wiz", "onenote", "ima-export"]
+
+        for provider_id in adapted_ids:
+            pattern = rf"id: '{provider_id}'[\s\S]+?checkpoint: {{ supported: true, strategy: 'items', resourceTracking: false }}"
+            self.assertRegex(providers_js, pattern)
+
+        self.assertRegex(
+            providers_js,
+            r"id: 'zsxq-group'[\s\S]+?checkpoint: { supported: true, strategy: 'cursor', resourceTracking: true }",
+        )
+        ima_import_block = re.search(r"id: 'ima-import'[\s\S]+?\n    }", providers_js)
+        self.assertIsNotNone(ima_import_block)
+        self.assertNotIn("checkpoint: { supported: true", ima_import_block.group(0))
 
 
 if __name__ == "__main__":

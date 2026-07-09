@@ -61,6 +61,7 @@ from export_aliyun_thoughts import (
     throttle_request,
     wait_for_debug_port,
 )
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_report import finalize_report
 
 
@@ -692,6 +693,7 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
     namespace, book_slug, book_url = parse_book_url(args.book_url)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint = open_checkpoint_from_args(args, "yuque", "export")
     cdp, chrome_proc = connect_book_browser(args, book_url, namespace, book_slug)
     try:
         auth_file = auth_path_from_args(args)
@@ -720,6 +722,31 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         for doc_id, old_path in existing.items():
             doc_paths[doc_id] = old_path
 
+        def checkpoint_key(doc: dict[str, Any]) -> str:
+            return f"yuque:doc:{doc.get('doc_id') or doc.get('uuid') or doc.get('url') or ''}"
+
+        if checkpoint:
+            checkpoint.start_task(
+                {
+                    "source": book_url,
+                    "outputDir": str(output),
+                    "totalDocs": len(docs),
+                    "resume": bool(getattr(args, "resume", False)),
+                    "retryFailed": bool(getattr(args, "retry_failed", False)),
+                }
+            )
+            for doc in docs:
+                key = str(doc.get("doc_id") or doc["uuid"])
+                checkpoint.upsert_item(
+                    checkpoint_key(doc),
+                    title=str(doc.get("title") or key),
+                    source_url=f"{book_url.rstrip('/')}/{doc.get('url') or ''}",
+                    source_id=key,
+                    metadata={"doc": doc},
+                )
+            if getattr(args, "retry_failed", False):
+                docs = [doc for doc in docs if checkpoint.item_status(checkpoint_key(doc)) == "failed"]
+
         exported = 0
         skipped = 0
         image_success = 0
@@ -743,10 +770,18 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                 break
             key = str(doc.get("doc_id") or doc["uuid"])
             md_path = doc_paths[key]
+            item_key = checkpoint_key(doc)
+            if checkpoint and getattr(args, "resume", False) and not args.update_existing and checkpoint.item_status(item_key) == "completed":
+                skipped += 1
+                continue
             if args.incremental and key in existing and not args.update_existing:
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"doc": doc, "skippedExisting": True})
                 skipped += 1
                 continue
             try:
+                if checkpoint:
+                    checkpoint.start_item(item_key, "content")
                 emit(
                     args,
                     f"开始导出语雀文档：{doc.get('title') or key}",
@@ -788,6 +823,8 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                         )
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"doc": doc})
                 exported += 1
                 emit(
                     args,
@@ -801,10 +838,14 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
                     },
                 )
             except ExportStopped:
+                if checkpoint:
+                    checkpoint.fail_item(item_key, "stopped")
                 stopped = True
                 emit(args, "收到停止请求，当前文档未写入，正在结束。", event="task.stopped", level="warn")
                 break
             except Exception as exc:
+                if checkpoint:
+                    checkpoint.fail_item(item_key, str(exc))
                 failures.append({"title": doc.get("title") or "", "slug": doc.get("url") or "", "error": str(exc)})
                 emit(
                     args,
@@ -864,9 +905,18 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
+        if checkpoint:
+            report["checkpoint"] = checkpoint.stats()
         report_path = output / "00-导出报告.json"
         report = finalize_report(report, provider="yuque", mode="export", report_file=report_path, output=output)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        if checkpoint:
+            if stopped:
+                checkpoint.fail_task("stopped", status="stopped")
+            elif failures:
+                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            else:
+                checkpoint.complete_task(report)
         emit(
             args,
             "语雀导出完成" if not stopped else "语雀导出已停止",
@@ -888,6 +938,8 @@ def export_book(args: argparse.Namespace) -> dict[str, Any]:
         cdp.close()
         if chrome_proc and args.close_started_chrome:
             chrome_proc.terminate()
+        if checkpoint:
+            checkpoint.close()
 
 
 def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], None] | None = None) -> dict[str, Any]:
@@ -1347,6 +1399,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait-login", action="store_true", help="Pause for manual login before exporting")
     parser.add_argument("--incremental", action="store_true", help="Only export documents missing from local Markdown")
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
+    add_checkpoint_args(parser)
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id/uuid, repeatable")
     parser.add_argument("--download-timeout", type=int, default=30, help="Seconds to wait for each image download")
     parser.add_argument("--progress-every", type=int, default=20, help="Print progress after N documents")

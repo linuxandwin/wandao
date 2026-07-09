@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_logging import WandaoLogger, print_text, structured_logs_enabled
 from wandao_report import finalize_report
 
@@ -1837,6 +1838,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
     workspace_id = args.workspace_id or extract_workspace_id(workspace_url)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint = open_checkpoint_from_args(args, "aliyun-thoughts", "export")
 
     auth_file = auth_path_from_args(args)
     cdp: CDPClient | None = None
@@ -1898,6 +1900,28 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
         selected_doc_ids = set(getattr(args, "selected_doc_ids", None) or [])
         docs = [node for node in nodes if node.type == "document" and (not selected_doc_ids or node.id in selected_doc_ids)]
         ensure_document_parent_dirs(docs, planned_doc_paths, output)
+        if checkpoint:
+            checkpoint.start_task(
+                {
+                    "source": workspace_url,
+                    "outputDir": str(output),
+                    "workspaceId": workspace_id,
+                    "totalDocs": len(docs),
+                    "resume": bool(getattr(args, "resume", False)),
+                    "retryFailed": bool(getattr(args, "retry_failed", False)),
+                }
+            )
+            for doc in docs:
+                checkpoint.upsert_item(
+                    f"aliyun:doc:{doc.id}",
+                    title=doc.title,
+                    source_url=f"https://thoughts.aliyun.com/workspaces/{workspace_id}/docs/{doc.id}",
+                    source_id=doc.id,
+                    parent_key=doc.parent_id,
+                    metadata={"id": doc.id, "title": doc.title, "type": doc.type, "parentId": doc.parent_id},
+                )
+            if getattr(args, "retry_failed", False):
+                docs = [doc for doc in docs if checkpoint.item_status(f"aliyun:doc:{doc.id}") == "failed"]
         emit(
             args,
             f"开始导出阿里云 Thoughts 文档：共 {len(docs)} 篇。",
@@ -1943,6 +1967,7 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 "failures": failures,
                 "imageFailures": image_failures,
                 "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "checkpoint": checkpoint.stats() if checkpoint else {},
             }
 
         def save_partial_report() -> None:
@@ -1961,12 +1986,21 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
             md_path = document_target_path(doc, index, by_id, children, folder_paths, planned_doc_paths, output)
             md_path.parent.mkdir(parents=True, exist_ok=True)
             doc_paths[doc.id] = existing_docs.get(doc.id, md_path)
+            item_key = f"aliyun:doc:{doc.id}"
+
+            if checkpoint and getattr(args, "resume", False) and not args.update_existing and checkpoint.item_status(item_key) == "completed":
+                skipped += 1
+                continue
 
             if args.incremental and doc.id in existing_docs and not args.update_existing:
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(existing_docs[doc.id]), metadata={"docId": doc.id, "skippedExisting": True})
                 skipped += 1
                 continue
 
             try:
+                if checkpoint:
+                    checkpoint.start_item(item_key, "content")
                 emit(
                     args,
                     f"开始导出文档：{doc.title}",
@@ -2005,6 +2039,8 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                     image_failures.append({"document": doc.title, "path": str(md_path), "failures": img_errors})
                 md_path.write_text(markdown, encoding="utf-8")
                 doc_paths[doc.id] = md_path
+                if checkpoint:
+                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"docId": doc.id, "title": doc.title})
                 exported += 1
                 emit(
                     args,
@@ -2014,10 +2050,14 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
                     stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_errors)},
                 )
             except ExportStopped:
+                if checkpoint:
+                    checkpoint.fail_item(item_key, "stopped")
                 stopped = True
                 emit(args, "收到停止请求，当前文档未写入，正在结束。")
                 break
             except Exception as exc:
+                if checkpoint:
+                    checkpoint.fail_item(item_key, str(exc))
                 failures.append({"id": doc.id, "title": doc.title, "error": str(exc)})
                 emit(
                     args,
@@ -2048,6 +2088,13 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
         write_index(output, root_items, children, folder_paths, doc_paths, selected_doc_ids or None)
         report = build_report(completed=not stopped and processed >= len(docs))
         write_json_report(report_path, report)
+        if checkpoint:
+            if stopped:
+                checkpoint.fail_task("stopped", status="stopped")
+            elif failures:
+                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            else:
+                checkpoint.complete_task(report)
         emit(
             args,
             "阿里云 Thoughts 导出完成" if report.get("completed") else "阿里云 Thoughts 导出已停止",
@@ -2068,6 +2115,8 @@ def export_workspace(args: argparse.Namespace) -> dict[str, Any]:
             cdp.close()
         if chrome_proc and args.close_started_chrome:
             chrome_proc.terminate()
+        if checkpoint:
+            checkpoint.close()
 
 
 def login_and_save_auth(args: argparse.Namespace, wait_callback: Callable[[], None] | None = None) -> dict[str, Any]:
@@ -2531,6 +2580,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait-login", action="store_true", help="Pause for manual login before exporting")
     parser.add_argument("--incremental", action="store_true", help="Only export documents missing from local Markdown")
     parser.add_argument("--update-existing", action="store_true", help="With --incremental, update existing documents too")
+    add_checkpoint_args(parser)
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", help="Export one specific document id, repeatable")
     parser.add_argument("--render-timeout", type=int, default=20, help="Seconds to wait for each document render")
     parser.add_argument("--no-api-export", dest="api_export", action="store_false", help="Disable fast edit API export and use browser-rendered DOM extraction")

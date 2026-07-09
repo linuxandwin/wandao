@@ -38,6 +38,7 @@ from export_aliyun_thoughts import (
     throttle_request,
     wait_for_debug_port,
 )
+from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_report import finalize_report
 
 
@@ -949,6 +950,7 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    checkpoint = open_checkpoint_from_args(args, "wiz", "export")
 
     cdp, chrome_proc = connect_wiz_browser(args)
     try:
@@ -959,6 +961,27 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
             docs = [doc for doc in docs if doc.doc_guid in selected_ids]
         planner = PathPlanner(output)
         doc_paths = {doc.doc_guid: planner.markdown_path(doc) for doc in docs}
+        if checkpoint:
+            checkpoint.start_task(
+                {
+                    "source": WIZ_APP_URL,
+                    "outputDir": str(output),
+                    "totalDocs": len(docs),
+                    "resume": bool(getattr(args, "resume", False)),
+                    "retryFailed": bool(getattr(args, "retry_failed", False)),
+                }
+            )
+            for doc in docs:
+                checkpoint.upsert_item(
+                    f"wiz:doc:{doc.doc_guid}",
+                    title=doc.title,
+                    source_url=doc.category,
+                    source_id=doc.doc_guid,
+                    parent_key=doc.kb_guid,
+                    metadata={"docGuid": doc.doc_guid, "kbGuid": doc.kb_guid, "category": doc.category},
+                )
+            if getattr(args, "retry_failed", False):
+                docs = [doc for doc in docs if checkpoint.item_status(f"wiz:doc:{doc.doc_guid}") == "failed"]
 
         exported = 0
         skipped = 0
@@ -976,10 +999,18 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
 
         for index, doc in enumerate(docs, start=1):
             md_path = doc_paths[doc.doc_guid]
+            item_key = f"wiz:doc:{doc.doc_guid}"
             try:
+                if checkpoint and getattr(args, "resume", False) and checkpoint.item_status(item_key) == "completed":
+                    skipped += 1
+                    continue
                 if args.incremental and md_path.exists():
+                    if checkpoint:
+                        checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"docGuid": doc.doc_guid, "skippedExisting": True})
                     skipped += 1
                 else:
+                    if checkpoint:
+                        checkpoint.start_item(item_key, "content")
                     emit(
                         args,
                         f"开始导出为知笔记：{doc.title}",
@@ -1000,6 +1031,8 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
                             error={"message": failure.get("error", "")},
                         )
                     exported += 1
+                    if checkpoint:
+                        checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"docGuid": doc.doc_guid})
                     emit(
                         args,
                         f"为知笔记导出完成：{doc.title}",
@@ -1008,8 +1041,12 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
                         stats={"imageSuccessInDoc": count, "imageFailuresInDoc": len(img_failures)},
                     )
             except ExportStopped:
+                if checkpoint:
+                    checkpoint.fail_item(item_key, "stopped")
                 raise
             except Exception as exc:  # noqa: BLE001 - keep exporting other docs.
+                if checkpoint:
+                    checkpoint.fail_item(item_key, str(exc))
                 failures.append({"docGuid": doc.doc_guid, "title": doc.title, "error": str(exc)})
                 emit(
                     args,
@@ -1046,9 +1083,16 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
             "failures": failures,
             "elapsedSeconds": round(time.time() - started, 2),
         }
+        if checkpoint:
+            report["checkpoint"] = checkpoint.stats()
         report_path = output / "00-导出报告.json"
         report = finalize_report(report, provider="wiz", mode="export", report_file=report_path, output=output)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        if checkpoint:
+            if failures:
+                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            else:
+                checkpoint.complete_task(report)
         emit(
             args,
             "为知笔记导出完成" if not failures else f"为知笔记导出完成，但有 {len(failures)} 个失败项",
@@ -1068,6 +1112,8 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
         cdp.close()
         if chrome_proc and args.close_started_chrome:
             chrome_proc.terminate()
+        if checkpoint:
+            checkpoint.close()
 
 
 def run_login(args: argparse.Namespace) -> dict[str, Any]:
@@ -1092,6 +1138,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--doc-id", action="append", dest="selected_doc_ids", default=[], help="只导出指定笔记 ID，可重复")
     parser.add_argument("--doc-id-file", default="", help="从文件读取要导出的笔记 ID，JSON 数组或逐行文本均可")
     parser.add_argument("--incremental", action="store_true", help="目标 Markdown 已存在时跳过")
+    add_checkpoint_args(parser)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Chrome 调试端口")
     parser.add_argument("--profile-dir", default=str(default_profile_path()), help="浏览器配置目录")
     parser.add_argument("--browser-path", default="", help="Chrome/Edge 可执行文件路径")
