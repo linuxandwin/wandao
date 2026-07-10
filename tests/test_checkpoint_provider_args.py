@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 class CheckpointProviderArgsTests(unittest.TestCase):
     def test_export_providers_accept_checkpoint_args(self) -> None:
         cases = [
@@ -59,6 +62,20 @@ class CheckpointProviderArgsTests(unittest.TestCase):
                     args = module.parse_args([*base_args, "--doc-id-file", str(id_file)])
 
                     self.assertEqual(getattr(args, attr)[-2:], ["doc-a", "doc-b"])
+
+    def test_resource_failures_keep_export_items_resumable(self) -> None:
+        expected_markers = {
+            "export_aliyun_thoughts.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片或附件下载失败\")",
+            "export_feishu.py": "checkpoint.fail_item(item_key, f\"{len(img_errors)} 个图片下载失败\")",
+            "export_yuque.py": "checkpoint.fail_item(item_key, f\"{len(resource_errors)} 个图片或附件下载失败\")",
+            "export_wiz.py": "checkpoint.fail_item(item_key, f\"{len(img_failures)} 个图片下载失败\")",
+            "export_youdao.py": "checkpoint.fail_item(item_key, f\"{resource_failures_in_doc} 个图片或附件下载失败\")",
+            "export_zsxq.py": "checkpoint.fail_item(\n                            checkpoint_item_key",
+        }
+        for filename, marker in expected_markers.items():
+            with self.subTest(script=filename):
+                source = (REPO_ROOT / filename).read_text(encoding="utf-8")
+                self.assertIn(marker, source)
 
 
 if __name__ == "__main__":

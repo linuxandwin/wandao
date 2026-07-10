@@ -46,6 +46,24 @@ class WandaoCheckpointTests(unittest.TestCase):
             finally:
                 reopened.close()
 
+    def test_source_scope_change_resets_old_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.sqlite"
+            checkpoint = WandaoCheckpoint.open(path, task_id="default", provider_id="demo", action="export")
+            try:
+                checkpoint.start_task({"source": "book-a", "outputDir": tmp})
+                checkpoint.upsert_item("item-a", title="A")
+                checkpoint.complete_item("item-a", local_path="a.md")
+
+                checkpoint.start_task({"source": "book-a", "outputDir": tmp})
+                self.assertEqual(checkpoint.item_status("item-a"), "completed")
+
+                checkpoint.start_task({"source": "book-b", "outputDir": tmp})
+                self.assertEqual(checkpoint.item_status("item-a"), "")
+                self.assertEqual(checkpoint.stats()["items"], {})
+            finally:
+                checkpoint.close()
+
     def test_open_checkpoint_from_args_can_reset_current_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.sqlite"

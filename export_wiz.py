@@ -40,6 +40,7 @@ from export_aliyun_thoughts import (
 )
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_cli import extend_arg_list_from_file
+from wandao_credentials import write_private_json
 from wandao_report import finalize_report
 
 
@@ -377,8 +378,7 @@ def save_auth_state(args: argparse.Namespace, cdp: CDPClient) -> dict[str, Any]:
         },
     }
     auth_file = auth_path_from_args(args)
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
-    auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(auth_file, payload)
     return {
         "authFile": str(auth_file),
         "displayName": account.get("displayName") or "",
@@ -1018,7 +1018,10 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
                         )
                     exported += 1
                     if checkpoint:
-                        checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"docGuid": doc.doc_guid})
+                        if img_failures:
+                            checkpoint.fail_item(item_key, f"{len(img_failures)} 个图片下载失败")
+                        else:
+                            checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"docGuid": doc.doc_guid})
                     emit(
                         args,
                         f"为知笔记导出完成：{doc.title}",
@@ -1075,15 +1078,18 @@ def export_wiz(args: argparse.Namespace) -> dict[str, Any]:
         report = finalize_report(report, provider="wiz", mode="export", report_file=report_path, output=output)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         if checkpoint:
-            if failures:
-                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            if failures or image_failures:
+                checkpoint.fail_task(
+                    f"{len(failures)} 个文档失败，{len(image_failures)} 个图片失败",
+                    status="failed",
+                )
             else:
                 checkpoint.complete_task(report)
         emit(
             args,
             "为知笔记导出完成" if not failures else f"为知笔记导出完成，但有 {len(failures)} 个失败项",
             event="task.completed",
-            level="success" if not failures else "warn",
+            level="success" if not failures and not image_failures else "warn",
             reportFile=str(report_path),
             stats={
                 "exportedDocs": exported,

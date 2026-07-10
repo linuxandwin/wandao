@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 import uuid
@@ -28,6 +29,32 @@ def json_loads(value: str | None, default: Any = None) -> Any:
         return json.loads(value)
     except Exception:
         return {} if default is None else default
+
+
+def resume_scope_key(provider_id: str, action: str, metadata: dict[str, Any]) -> str:
+    explicit = str(metadata.get("resumeKey") or "").strip()
+    if explicit:
+        return explicit
+    identity = {
+        "provider": provider_id,
+        "action": action,
+        "source": str(metadata.get("source") or ""),
+        "target": str(metadata.get("target") or ""),
+        "outputDir": str(metadata.get("outputDir") or ""),
+    }
+    for key in (
+        "workspaceId",
+        "rootId",
+        "groupId",
+        "groupScope",
+        "knowledgeBaseId",
+        "entryKind",
+        "sourceMode",
+    ):
+        if metadata.get(key) not in (None, ""):
+            identity[key] = metadata[key]
+    encoded = json_dumps(identity).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class WandaoCheckpoint:
@@ -182,6 +209,17 @@ class WandaoCheckpoint:
     def start_task(self, metadata: dict[str, Any] | None = None) -> None:
         metadata = metadata or {}
         ts = now_iso()
+        resume_key = resume_scope_key(self.provider_id, self.action, metadata)
+        previous = self.conn.execute(
+            "SELECT provider_id, action, resume_key FROM tasks WHERE task_id = ?",
+            (self.task_id,),
+        ).fetchone()
+        if previous and (
+            str(previous["provider_id"] or "") != self.provider_id
+            or str(previous["action"] or "") != self.action
+            or str(previous["resume_key"] or "") != resume_key
+        ):
+            self.reset_task()
         with self.conn:
             self.conn.execute(
                 """
@@ -190,6 +228,13 @@ class WandaoCheckpoint:
                     status, current_stage, metadata_json, error_summary, created_at, updated_at, completed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, '', ?, ?, '')
                 ON CONFLICT(task_id) DO UPDATE SET
+                    provider_id = excluded.provider_id,
+                    action = excluded.action,
+                    resume_key = excluded.resume_key,
+                    args_hash = excluded.args_hash,
+                    source = excluded.source,
+                    target = excluded.target,
+                    output_dir = excluded.output_dir,
                     status = 'running',
                     current_stage = excluded.current_stage,
                     metadata_json = excluded.metadata_json,
@@ -201,7 +246,7 @@ class WandaoCheckpoint:
                     self.task_id,
                     self.provider_id,
                     self.action,
-                    str(metadata.get("resumeKey") or ""),
+                    resume_key,
                     str(metadata.get("argsHash") or ""),
                     str(metadata.get("source") or ""),
                     str(metadata.get("target") or ""),

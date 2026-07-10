@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runPythonCommand: (command, args, options) => ipcRenderer.invoke('run-python-command', command, args, options),
   stopPythonProcess: () => ipcRenderer.invoke('stop-python-process'),
   sendPythonInput: (text) => ipcRenderer.invoke('send-python-input', text),
+  protectTaskArgs: (args) => ipcRenderer.invoke('protect-task-args', args),
+  restoreTaskArgs: (payload) => ipcRenderer.invoke('restore-task-args', payload),
 
   // 文件操作
   readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),

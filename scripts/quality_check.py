@@ -118,6 +118,8 @@ def run_node_checks() -> None:
                 "if(text.indexOf('Demo')<0||text.indexOf('***')<0||text.indexOf('导出 1')<0) process.exit(1);"
                 "const task={report:r.normalizeTaskReport({output:'out',reportFile:'report.json',failures:[{title:'a',error:'bad'}]})};"
                 "if(r.taskArtifactPaths(task).reportFile!=='report.json'||r.taskFailurePreview(task,1)[0].indexOf('bad')<0) process.exit(1);"
+                "const resourceTask={report:r.normalizeTaskReport({imageFailureCount:2,resourceFailures:[{error:'x'},{error:'y'}]})};"
+                "if(r.taskFailureCount(resourceTask)!==2) process.exit(1);"
                 "const warningReport=r.normalizeTaskReport({totalDocs:1,resourceWarnings:[{target:'missing.png',reason:'local_file_missing'}]});"
                 "if(warningReport.stats.failed!==0||warningReport.failures.length!==0) process.exit(1);"
             ),

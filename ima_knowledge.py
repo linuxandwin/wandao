@@ -35,6 +35,7 @@ from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_cli import extend_arg_list_from_file
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
+from wandao_credentials import write_private_json
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -206,8 +207,7 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    write_private_json(path, data)
 
 
 def require_credentials(args: argparse.Namespace) -> tuple[str, str]:

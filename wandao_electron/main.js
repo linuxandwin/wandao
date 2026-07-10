@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, safeStorage } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -6,6 +6,8 @@ const https = require('https');
 
 let mainWindow;
 let pythonProcess = null;
+let pythonProcessStopping = false;
+const MAX_PROCESS_OUTPUT_CHARS = 32 * 1024 * 1024;
 
 const PROJECT_INFO = {
   name: '万能导 Wandao',
@@ -59,6 +61,77 @@ function cleanupPythonProcess() {
       // Ignore shutdown cleanup errors.
     }
     pythonProcess = null;
+    pythonProcessStopping = false;
+  }
+}
+
+function protectTaskArgs(args) {
+  if (!Array.isArray(args)) {
+    return { success: false, error: '任务参数格式不正确。' };
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    return { success: false, error: '当前系统无法使用安全存储，任务参数不会写入历史记录。' };
+  }
+  try {
+    const encrypted = safeStorage.encryptString(JSON.stringify(args.map((item) => String(item))));
+    return { success: true, payload: encrypted.toString('base64') };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+}
+
+function restoreTaskArgs(payload) {
+  const encoded = String(payload || '').trim();
+  if (!encoded) return { success: true, args: [] };
+  if (!safeStorage.isEncryptionAvailable()) {
+    return { success: false, error: '当前系统无法解密任务参数，请重新填写参数后执行。', args: [] };
+  }
+  try {
+    const value = JSON.parse(safeStorage.decryptString(Buffer.from(encoded, 'base64')));
+    if (!Array.isArray(value)) throw new Error('任务参数不是数组');
+    return { success: true, args: value.map((item) => String(item)) };
+  } catch (error) {
+    return { success: false, error: `任务参数解密失败：${error.message || String(error)}`, args: [] };
+  }
+}
+
+function appendOutputTail(current, chunk) {
+  const combined = current + chunk;
+  if (combined.length <= MAX_PROCESS_OUTPUT_CHARS) {
+    return { text: combined, omitted: 0 };
+  }
+  const omitted = combined.length - MAX_PROCESS_OUTPUT_CHARS;
+  return { text: combined.slice(omitted), omitted };
+}
+
+function outputWithOmissionNotice(text, omitted) {
+  if (!omitted) return text;
+  return `[前部 ${omitted} 个字符已省略，以下为输出尾部]\n${text}`;
+}
+
+function writePrivateTextAtomic(filePath, content) {
+  const target = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  );
+  try {
+    fs.writeFileSync(temporary, String(content), { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(temporary, target);
+    try {
+      fs.chmodSync(target, 0o600);
+    } catch (_error) {
+      // Windows primarily relies on the current user's profile ACL.
+    }
+  } finally {
+    if (fs.existsSync(temporary)) {
+      try {
+        fs.unlinkSync(temporary);
+      } catch (_error) {
+        // Best-effort cleanup after a failed write.
+      }
+    }
   }
 }
 
@@ -341,8 +414,7 @@ function readAppSettings() {
 }
 
 function writeAppSettings(settings) {
-  fs.mkdirSync(app.getPath('userData'), { recursive: true });
-  fs.writeFileSync(appSettingsPath(), JSON.stringify(normalizeAppSettings(settings), null, 2), 'utf-8');
+  writePrivateTextAtomic(appSettingsPath(), JSON.stringify(normalizeAppSettings(settings), null, 2));
 }
 
 function publicAppSettings(settings = readAppSettings()) {
@@ -447,10 +519,91 @@ function pluginScriptRef(providerId, scriptName, providerRoot) {
   return `provider:${providerId}:${scriptName.replace(/\\/g, '/')}`;
 }
 
+const PROVIDER_TYPES = new Set(['automation', 'guide', 'hybrid']);
+const PROVIDER_GROUPS = new Set(['export', 'import', 'guide']);
+const PROVIDER_TRUST_LEVELS = new Set(['official', 'community', 'local', 'experimental', 'guide']);
+const PROVIDER_STATUSES = new Set(['stable', 'beta', 'experimental']);
+const PROVIDER_FIELD_TYPES = new Set(['text', 'password', 'number', 'textarea', 'directory', 'file', 'checkbox', 'select', 'notice']);
+const PROVIDER_ACTION_KINDS = new Set(['login', 'scan', 'export', 'import', 'plan', 'check', 'custom']);
+const PROVIDER_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+function assertProviderManifest(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function validateProviderManifestRuntime(raw, providerRoot) {
+  assertProviderManifest(raw && typeof raw === 'object' && !Array.isArray(raw), 'provider.json 根节点必须是对象');
+  assertProviderManifest(raw.schemaVersion === 1, '只支持 schemaVersion=1');
+  const id = String(raw.id || '').trim();
+  assertProviderManifest(/^[a-z0-9][a-z0-9_-]{1,63}$/i.test(id), `Provider ID 不合法：${id || '(空)'}`);
+  assertProviderManifest(path.basename(providerRoot) === id, `Provider 目录名必须和 ID 一致：${path.basename(providerRoot)} != ${id}`);
+  for (const key of ['name', 'title', 'description', 'type', 'group', 'trustLevel', 'status']) {
+    assertProviderManifest(typeof raw[key] === 'string' && raw[key].trim(), `缺少必填字段：${key}`);
+  }
+  assertProviderManifest(PROVIDER_TYPES.has(raw.type), `不支持的 Provider 类型：${raw.type}`);
+  assertProviderManifest(PROVIDER_GROUPS.has(raw.group), `不支持的 Provider 分组：${raw.group}`);
+  assertProviderManifest(PROVIDER_TRUST_LEVELS.has(raw.trustLevel), `不支持的信任等级：${raw.trustLevel}`);
+  assertProviderManifest(PROVIDER_STATUSES.has(raw.status), `不支持的 Provider 状态：${raw.status}`);
+  assertProviderManifest(raw.capabilities && typeof raw.capabilities === 'object' && !Array.isArray(raw.capabilities), 'capabilities 必须是对象');
+  for (const [key, value] of Object.entries(raw.capabilities)) {
+    assertProviderManifest(typeof value === 'boolean', `capabilities.${key} 必须是布尔值`);
+  }
+  if (raw.capabilities.retryFailures) {
+    assertProviderManifest(
+      raw.retryFailures && typeof raw.retryFailures.arg === 'string' && raw.retryFailures.arg.startsWith('--'),
+      'capabilities.retryFailures=true 时必须声明 retryFailures.arg'
+    );
+  }
+  if (raw.type === 'guide' || raw.type === 'hybrid') {
+    const guidePath = String(raw.guide || raw.guidePath || '').trim();
+    assertProviderManifest(Boolean(guidePath), 'guide/hybrid Provider 必须声明 guide');
+    const resolvedGuide = path.resolve(providerRoot, guidePath);
+    assertProviderManifest(isInsidePath(providerRoot, resolvedGuide) && fs.existsSync(resolvedGuide), `guide 文件不存在或路径越界：${guidePath}`);
+  }
+
+  const fields = raw.fields ?? [];
+  assertProviderManifest(Array.isArray(fields), 'fields 必须是数组');
+  const fieldNames = new Set();
+  fields.forEach((field, index) => {
+    assertProviderManifest(field && typeof field === 'object' && !Array.isArray(field), `fields[${index}] 必须是对象`);
+    assertProviderManifest(PROVIDER_NAME_PATTERN.test(String(field.name || '')), `fields[${index}].name 不合法`);
+    assertProviderManifest(!fieldNames.has(field.name), `字段名重复：${field.name}`);
+    fieldNames.add(field.name);
+    assertProviderManifest(PROVIDER_FIELD_TYPES.has(field.type || 'text'), `fields[${index}].type 不支持：${field.type}`);
+  });
+
+  const actions = raw.actions ?? [];
+  assertProviderManifest(Array.isArray(actions), 'actions 必须是数组');
+  assertProviderManifest(raw.type === 'guide' || actions.length > 0, '非教程型 Provider 至少需要一个 action');
+  const actionIds = new Set();
+  actions.forEach((action, index) => {
+    assertProviderManifest(action && typeof action === 'object' && !Array.isArray(action), `actions[${index}] 必须是对象`);
+    const actionId = String(action.id || '');
+    assertProviderManifest(PROVIDER_NAME_PATTERN.test(actionId), `actions[${index}].id 不合法`);
+    assertProviderManifest(!actionIds.has(actionId), `动作 ID 重复：${actionId}`);
+    actionIds.add(actionId);
+    assertProviderManifest(typeof action.label === 'string' && action.label.trim(), `actions[${index}].label 不能为空`);
+    if (action.kind !== undefined) {
+      assertProviderManifest(PROVIDER_ACTION_KINDS.has(action.kind), `actions[${index}].kind 不支持：${action.kind}`);
+    }
+    assertProviderManifest(action.args === undefined || (Array.isArray(action.args) && action.args.every((item) => typeof item === 'string')), `actions[${index}].args 必须是字符串数组`);
+    assertProviderManifest(Boolean(action.script || raw.script), `actions[${index}].script 不能为空`);
+  });
+  if (raw.type !== 'guide' && raw.capabilities.scanToc) {
+    assertProviderManifest(
+      actions.some((action) => action && (action.kind === 'scan' || action.id === 'scan')),
+      'capabilities.scanToc=true 时必须提供 scan action'
+    );
+  }
+  return id;
+}
+
 function normalizeProviderManifest(raw, providerRoot, sourceKind) {
-  if (!raw || !raw.id) return null;
-  const id = String(raw.id).trim();
-  if (!/^[a-z0-9][a-z0-9_-]{1,63}$/i.test(id)) return null;
+  const id = validateProviderManifestRuntime(raw, providerRoot);
+  const defaultScript = raw.script ? pluginScriptRef(id, raw.script, providerRoot) : '';
+  if (raw.script && !defaultScript) {
+    throw new Error(`Provider 默认脚本无效：${raw.script}`);
+  }
   const provider = {
     ...raw,
     id,
@@ -460,18 +613,23 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind) {
     templateId: raw.templateId || '',
     guideMarkdown: readGuideMarkdown(providerRoot, raw.guide || raw.guidePath || 'README.md')
   };
-  provider.script = pluginScriptRef(id, raw.script, providerRoot);
+  provider.script = defaultScript;
   if (Array.isArray(raw.actions)) {
-    provider.actions = raw.actions.map((action) => ({
-      ...action,
-      script: pluginScriptRef(id, action && action.script, providerRoot) || provider.script
-    }));
+    provider.actions = raw.actions.map((action, index) => {
+      const declaredScript = action && action.script ? action.script : raw.script;
+      const actionScript = pluginScriptRef(id, declaredScript, providerRoot);
+      if (!actionScript) {
+        throw new Error(`actions[${index}].script 无效：${declaredScript}`);
+      }
+      return { ...action, script: actionScript };
+    });
   }
   return provider;
 }
 
 function discoverProviderManifests() {
   const providers = [];
+  const errors = [];
   const seen = new Set();
   const userProviderRoot = path.join(app.getPath('userData'), 'providers');
   for (const root of providerRoots()) {
@@ -484,15 +642,19 @@ function discoverProviderManifests() {
       if (!fs.existsSync(manifestPath)) continue;
       try {
         const manifest = normalizeProviderManifest(readJsonFile(manifestPath), providerRoot, sourceKind);
-        if (!manifest || seen.has(manifest.id)) continue;
+        if (seen.has(manifest.id)) {
+          errors.push(`${manifestPath}：Provider ID 冲突，已忽略 ${manifest.id}`);
+          continue;
+        }
         seen.add(manifest.id);
         providers.push(manifest);
       } catch (error) {
         console.warn(`Failed to load provider manifest ${manifestPath}:`, error);
+        errors.push(`${manifestPath}：${error.message || String(error)}`);
       }
     }
   }
-  return providers;
+  return { providers, errors };
 }
 
 function findProviderScript(scriptName) {
@@ -648,6 +810,20 @@ function compressDocIdArgs(scriptName, args) {
   const filePath = path.join(tmpDir, fileName);
   fs.writeFileSync(filePath, JSON.stringify({ docIds }, null, 2), 'utf-8');
   return [...compactArgs, '--doc-id-file', filePath];
+}
+
+function cleanupTemporaryDocIdFile(args) {
+  const values = Array.isArray(args) ? args : [];
+  const index = values.indexOf('--doc-id-file');
+  if (index < 0 || index + 1 >= values.length) return;
+  const candidate = path.resolve(String(values[index + 1] || ''));
+  const tmpRoot = path.join(app.getPath('userData'), 'tmp');
+  if (!isInsidePath(tmpRoot, candidate) || !/-doc-ids-\d+-[a-z0-9]+\.json$/i.test(path.basename(candidate))) return;
+  try {
+    fs.unlinkSync(candidate);
+  } catch (_error) {
+    // The script may already have removed the temporary selection file.
+  }
 }
 
 function parseLastJson(stdout) {
@@ -1077,6 +1253,8 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
         PYTHONPATH: [pythonLibraryDir(), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
       })
     });
+    pythonProcess = proc;
+    pythonProcessStopping = false;
 
     if (options?.stdinText) {
       proc.stdin.write(String(options.stdinText));
@@ -1085,10 +1263,14 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
 
     let stdout = '';
     let stderr = '';
+    let stdoutOmitted = 0;
+    let stderrOmitted = 0;
 
     proc.stdout.on('data', (data) => {
       const text = data.toString();
-      stdout += text;
+      const next = appendOutputTail(stdout, text);
+      stdout = next.text;
+      stdoutOmitted += next.omitted;
       // 实时发送日志到渲染进程
       if (mainWindow) {
         mainWindow.webContents.send('python-log', text);
@@ -1097,21 +1279,29 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
 
     proc.stderr.on('data', (data) => {
       const text = data.toString();
-      stderr += text;
+      const next = appendOutputTail(stderr, text);
+      stderr = next.text;
+      stderrOmitted += next.omitted;
       if (mainWindow) {
         mainWindow.webContents.send('python-log', text);
       }
     });
 
     proc.on('close', (code) => {
-      pythonProcess = null;
+      cleanupTemporaryDocIdFile(commandArgs);
+      if (pythonProcess === proc) {
+        pythonProcess = null;
+        pythonProcessStopping = false;
+      }
       if (code === 0) {
         resolve({ success: true, data: parseLastJson(stdout) });
       } else {
         const parsed = parseLastJson(stdout);
         resolve({
           success: false,
-          error: stderr || stdout || `Python exited with code ${code}`,
+          error: stderr
+            ? outputWithOmissionNotice(stderr, stderrOmitted)
+            : (stdout ? outputWithOmissionNotice(stdout, stdoutOmitted) : `Python exited with code ${code}`),
           code,
           data: parsed && Object.keys(parsed).length ? parsed : null
         });
@@ -1119,23 +1309,35 @@ ipcMain.handle('run-python-command', async (event, scriptName, args, options = {
     });
 
     proc.on('error', (error) => {
-      pythonProcess = null;
+      cleanupTemporaryDocIdFile(commandArgs);
+      if (pythonProcess === proc) {
+        pythonProcess = null;
+        pythonProcessStopping = false;
+      }
       resolve({ success: false, error: error.message || String(error) });
     });
-
-    // 保存进程引用以便停止
-    pythonProcess = proc;
   });
 });
 
 ipcMain.handle('stop-python-process', async () => {
   if (pythonProcess) {
-    pythonProcess.kill('SIGTERM');
-    pythonProcess = null;
-    return { success: true };
+    if (pythonProcessStopping) {
+      return { success: true, stopping: true };
+    }
+    pythonProcessStopping = true;
+    const signaled = pythonProcess.kill('SIGTERM');
+    if (!signaled) {
+      pythonProcessStopping = false;
+      return { success: false, error: '无法停止当前任务，请稍后重试。' };
+    }
+    return { success: true, stopping: true };
   }
   return { success: false, error: '没有正在运行的任务' };
 });
+
+ipcMain.handle('protect-task-args', async (event, args) => protectTaskArgs(args));
+
+ipcMain.handle('restore-task-args', async (event, payload) => restoreTaskArgs(payload));
 
 ipcMain.handle('send-python-input', async (event, text) => {
   if (!pythonProcess || !pythonProcess.stdin || pythonProcess.stdin.destroyed) {
@@ -1162,8 +1364,7 @@ ipcMain.handle('read-file', async (event, filePath) => {
 ipcMain.handle('write-file', async (event, filePath, content) => {
   try {
     const managedPath = resolveManagedFilePath(filePath);
-    fs.mkdirSync(path.dirname(managedPath), { recursive: true });
-    fs.writeFileSync(managedPath, content, 'utf-8');
+    writePrivateTextAtomic(managedPath, content);
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1234,7 +1435,7 @@ ipcMain.handle('detect-browsers', async () => {
 
 ipcMain.handle('get-provider-manifests', async () => {
   try {
-    return { success: true, providers: discoverProviderManifests() };
+    return { success: true, ...discoverProviderManifests() };
   } catch (error) {
     return { success: false, error: error.message || String(error), providers: [] };
   }

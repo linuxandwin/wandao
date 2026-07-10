@@ -9,19 +9,18 @@ installing Python manually.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import os
 import pathlib
 import platform
-import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import urllib.request
-import urllib.error
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -29,19 +28,25 @@ ELECTRON_DIR = SCRIPT_DIR.parent
 PROJECT_DIR = ELECTRON_DIR.parent
 DEFAULT_OUTPUT_DIR = ELECTRON_DIR / "runtime" / "python-runtime"
 DEFAULT_CACHE_DIR = ELECTRON_DIR / ".runtime-cache"
-PYTHON_STANDALONE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
+PYTHON_STANDALONE_RELEASE = "20260623"
+PYTHON_STANDALONE_DOWNLOAD_BASE = (
+    f"https://github.com/astral-sh/python-build-standalone/releases/download/{PYTHON_STANDALONE_RELEASE}"
+)
 
 TARGETS = {
     "win-x64": {
-        "asset": r"cpython-3\.11\..*x86_64-pc-windows-msvc-install_only_stripped\.tar\.gz$",
+        "asset": "cpython-3.11.15+20260623-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "6589ca6d63f520bec4096d62b3ab91da3d0a80b16b594c99a6b677e335814683",
         "exe": pathlib.Path("python.exe"),
     },
     "mac-x64": {
-        "asset": r"cpython-3\.11\..*x86_64-apple-darwin-install_only_stripped\.tar\.gz$",
+        "asset": "cpython-3.11.15+20260623-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "4925e5aaa9bc77c85302d350b36c1d9def2002996a6bcfa55c88ba6eb318de29",
         "exe": pathlib.Path("bin/python3"),
     },
     "mac-arm64": {
-        "asset": r"cpython-3\.11\..*aarch64-apple-darwin-install_only_stripped\.tar\.gz$",
+        "asset": "cpython-3.11.15+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "2318799eaf104f8a29bc09a93b0851b05dbbcb4ce9a5f045ddea169c0c7ff3a5",
         "exe": pathlib.Path("bin/python3"),
     },
 }
@@ -59,55 +64,53 @@ def host_target() -> str:
     raise SystemExit(f"当前系统暂不支持自动准备运行时：{platform.system()} {platform.machine()}")
 
 
-def github_headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "wandao-build",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def request_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers=github_headers())
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code in {403, 429}:
-            raise SystemExit(
-                "GitHub API 请求被限流，无法获取 Python standalone release。"
-                "请在 GitHub Actions 中传入 GITHUB_TOKEN，或设置 WANDAO_PYTHON_RUNTIME_URL 指向运行时压缩包。"
-            ) from exc
-        raise
-
-
-def pick_asset(target: str) -> tuple[str, str]:
+def pick_asset(target: str) -> tuple[str, str, str]:
     override = os.environ.get("WANDAO_PYTHON_RUNTIME_URL")
     if override:
-        return pathlib.PurePosixPath(override.split("?")[0]).name, override
+        digest = os.environ.get("WANDAO_PYTHON_RUNTIME_SHA256") or TARGETS[target]["sha256"]
+        return pathlib.PurePosixPath(override.split("?")[0]).name, override, digest
 
-    release = request_json(PYTHON_STANDALONE_API)
-    pattern = re.compile(TARGETS[target]["asset"])
-    for asset in release.get("assets", []):
-        name = asset.get("name", "")
-        if pattern.match(name):
-            return name, asset["browser_download_url"]
-    raise SystemExit(f"没有找到 {target} 对应的 Python standalone 资源")
+    asset_name = str(TARGETS[target]["asset"])
+    url_name = asset_name.replace("+", "%2B")
+    return asset_name, f"{PYTHON_STANDALONE_DOWNLOAD_BASE}/{url_name}", str(TARGETS[target]["sha256"])
 
 
-def download(url: str, destination: pathlib.Path) -> None:
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_archive(path: pathlib.Path, expected_sha256: str) -> None:
+    actual = file_sha256(path)
+    if actual.lower() != expected_sha256.lower():
+        raise SystemExit(f"Python runtime SHA256 校验失败：{path.name}，expected={expected_sha256} actual={actual}")
+
+
+def download(url: str, destination: pathlib.Path, expected_sha256: str) -> None:
     if destination.exists() and destination.stat().st_size > 0:
-        print(f"Reuse cached runtime archive: {destination}")
-        return
+        try:
+            verify_archive(destination, expected_sha256)
+            print(f"Reuse cached runtime archive: {destination}")
+            return
+        except SystemExit:
+            destination.unlink()
     print(f"Download Python runtime: {url}")
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    if temporary.exists():
+        temporary.unlink()
     req = urllib.request.Request(url, headers={"User-Agent": "wandao-build"})
-    with urllib.request.urlopen(req, timeout=180) as response:
-        with destination.open("wb") as out:
-            shutil.copyfileobj(response, out)
+    try:
+        with urllib.request.urlopen(req, timeout=180) as response:
+            with temporary.open("wb") as out:
+                shutil.copyfileobj(response, out)
+        verify_archive(temporary, expected_sha256)
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def safe_extract_tar(archive: pathlib.Path, destination: pathlib.Path) -> None:
@@ -207,9 +210,9 @@ def prepare_runtime(target: str, output_dir: pathlib.Path, cache_dir: pathlib.Pa
         raise SystemExit(f"未知 target：{target}，可选：auto, {', '.join(TARGETS)}")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    asset_name, url = pick_asset(target)
+    asset_name, url, expected_sha256 = pick_asset(target)
     archive_path = cache_dir / asset_name
-    download(url, archive_path)
+    download(url, archive_path, expected_sha256)
 
     with tempfile.TemporaryDirectory(prefix="wandao-python-runtime-") as tmp:
         extract_dir = pathlib.Path(tmp) / "extract"

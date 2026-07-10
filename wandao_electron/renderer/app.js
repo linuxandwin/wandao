@@ -2,11 +2,11 @@ const PROVIDER_REGISTRY = window.WandaoProviders;
 let TOOLS = PROVIDER_REGISTRY?.tools?.() || {};
 const DEFAULT_VIEW_ID = 'home';
 const PRIMARY_NAV_ITEMS = [
-  { id: 'home', label: '首页', description: '快速开始' },
-  { id: 'platform-center', label: '平台中心', description: '选择平台和操作' },
-  { id: 'task-center', label: '任务中心', description: '查看最近任务' },
-  { id: 'notice-center', label: '教程公告', description: '公告与教程' },
-  { id: 'settings', label: '设置', description: '偏好与帮助' }
+  { id: 'home', label: '首页', description: '快速开始', icon: 'home' },
+  { id: 'platform-center', label: '平台中心', description: '选择平台和操作', icon: 'platforms' },
+  { id: 'task-center', label: '任务中心', description: '查看最近任务', icon: 'tasks' },
+  { id: 'notice-center', label: '教程公告', description: '公告与教程', icon: 'notice' },
+  { id: 'settings', label: '设置', description: '偏好与帮助', icon: 'settings' }
 ];
 const GITHUB_REPO_URL = 'https://github.com/tllovesxs/wandao';
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/tllovesxs/wandao/main/';
@@ -160,8 +160,10 @@ let appSettingsState = {
 };
 const MAX_LOG_ENTRIES = 2000;
 const LOG_PANEL_RENDER_LIMIT = 400;
+const MAX_TASK_LOG_ENTRIES = 2000;
 const userLogEntries = [];
 const detailLogEntries = [];
+let activeTaskLogEntries = [];
 let logViewMode = localStorage.getItem('wandao-log-view') === 'detail' ? 'detail' : 'user';
 const MAX_TASK_HISTORY = 80;
 let taskHistory = [];
@@ -369,6 +371,12 @@ function appendDetailedLog(source, type, message, meta = {}) {
   };
   detailLogEntries.push(entry);
   trimLogStore(detailLogEntries);
+  if (activeHistoryTask) {
+    activeTaskLogEntries.push(entry);
+    if (activeTaskLogEntries.length > MAX_TASK_LOG_ENTRIES) {
+      activeTaskLogEntries.splice(0, activeTaskLogEntries.length - MAX_TASK_LOG_ENTRIES);
+    }
+  }
   if (logViewMode === 'detail') renderDetailedLogEntry(entry);
 }
 
@@ -629,8 +637,16 @@ function taskFailureDiagnostics(task, limit = 80) {
 }
 
 function taskFailureCount(task) {
-  const failed = Number(task.report?.stats?.failed ?? task.stats?.failed ?? 0);
-  return Number.isFinite(failed) ? failed : 0;
+  return window.WandaoTaskReport?.taskFailureCount(task) || 0;
+}
+
+function setLogCollapsed(collapsed) {
+  const section = document.getElementById('log-section');
+  const button = document.getElementById('btn-toggle-log');
+  if (!section || !button) return;
+  section.classList.toggle('is-collapsed', collapsed);
+  button.textContent = collapsed ? '展开日志' : '收起日志';
+  button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
 }
 
 function providerRetryFailureArg(provider) {
@@ -641,6 +657,7 @@ function providerRetryFailureArg(provider) {
 
 function canResumeTask(task) {
   if (!task) return false;
+  if (task.argsUnavailable) return false;
   if (task.status === 'running') return false;
   if (task.status !== 'completed') return true;
   const provider = TOOLS[task.providerId] || {};
@@ -649,6 +666,7 @@ function canResumeTask(task) {
 
 function resumeTaskDisabledReason(task) {
   if (!task) return '没有可继续的任务。';
+  if (task.argsUnavailable) return '任务参数无法解密，请回到平台页面重新填写后执行。';
   if (task.status === 'running') return '任务正在运行中，不能重复启动。';
   if (task.status !== 'completed') return '';
   if (taskFailureCount(task) <= 0) return '任务已完成且没有失败项。';
@@ -671,17 +689,54 @@ async function loadTaskHistory() {
   const filePath = taskHistoryPath();
   if (!filePath) return;
   const data = await readJsonFileIfExists(filePath);
-  taskHistory = Array.isArray(data?.tasks) ? data.tasks : [];
+  const storedTasks = Array.isArray(data?.tasks) ? data.tasks : [];
+  let needsMigration = false;
+  taskHistory = await Promise.all(storedTasks.map(async (storedTask) => {
+    const task = { ...storedTask };
+    if (task.status === 'running' || task.status === 'stopping') {
+      task.status = 'interrupted';
+      task.finishedAt = task.finishedAt || new Date().toISOString();
+      task.error = task.error || '上次运行未正常结束，可以继续执行。';
+      needsMigration = true;
+    }
+    if (task.protectedArgs && window.electronAPI.restoreTaskArgs) {
+      const restored = await window.electronAPI.restoreTaskArgs(task.protectedArgs);
+      task.args = restored?.success && Array.isArray(restored.args) ? restored.args : [];
+      task.argsUnavailable = !restored?.success;
+    } else if (Array.isArray(task.args) && task.args.length) {
+      // Legacy history stored raw args. Keep them only in memory and encrypt on the next save.
+      needsMigration = true;
+    } else {
+      task.args = [];
+    }
+    return task;
+  }));
+  if (needsMigration) await saveTaskHistory();
   renderTaskHistory();
 }
 
 async function saveTaskHistory() {
   const filePath = taskHistoryPath();
   if (!filePath) return;
-  const tasks = taskHistory.slice(0, MAX_TASK_HISTORY).map((task) => {
+  const tasks = await Promise.all(taskHistory.slice(0, MAX_TASK_HISTORY).map(async (task) => {
     const { pendingSave, detailStartIndex, ...persistable } = task;
+    const rawArgs = Array.isArray(task.args) ? task.args : [];
+    if (rawArgs.length && window.electronAPI.protectTaskArgs) {
+      const protectedResult = await window.electronAPI.protectTaskArgs(rawArgs);
+      if (protectedResult?.success) {
+        persistable.protectedArgs = protectedResult.payload;
+        persistable.args = [];
+        persistable.argsUnavailable = false;
+      } else {
+        persistable.args = window.WandaoTaskReport?.maskArgs(rawArgs) || [];
+        persistable.argsUnavailable = true;
+        delete persistable.protectedArgs;
+      }
+    } else {
+      persistable.args = [];
+    }
     return persistable;
-  });
+  }));
   const content = JSON.stringify({
     version: 1,
     updatedAt: new Date().toISOString(),
@@ -798,12 +853,12 @@ function startHistoryTask(script, args, context = {}) {
     resultData: null,
     error: '',
     stats: extractTaskStats(null),
-    detailStartIndex: detailLogEntries.length,
     logs: []
   };
   taskHistory.unshift(task);
   taskHistory = taskHistory.slice(0, MAX_TASK_HISTORY);
   activeHistoryTask = task;
+  activeTaskLogEntries = [];
   task.pendingSave = saveTaskHistory();
   renderTaskHistory();
   return task;
@@ -829,9 +884,11 @@ async function finishHistoryTask(task, result, thrownError = null) {
     mode: task.action
   }) || null;
   task.stats = task.report?.stats ? { ...task.report.stats, failureItems: task.report.failures || [] } : extractTaskStats(task.resultData, task.error);
-  task.logs = detailLogEntries.slice(task.detailStartIndex || 0);
-  delete task.detailStartIndex;
-  if (activeHistoryTask?.id === task.id) activeHistoryTask = null;
+  task.logs = [...activeTaskLogEntries];
+  if (activeHistoryTask?.id === task.id) {
+    activeHistoryTask = null;
+    activeTaskLogEntries = [];
+  }
   await saveTaskHistory();
   renderTaskHistory();
 }
@@ -924,7 +981,8 @@ function progressElements() {
     title: document.getElementById('progress-title'),
     percent: document.getElementById('progress-percent'),
     fill: document.getElementById('progress-fill'),
-    detail: document.getElementById('progress-detail')
+    detail: document.getElementById('progress-detail'),
+    track: document.querySelector('#progress-section .progress-track')
   };
 }
 
@@ -940,6 +998,8 @@ function startProgress(title, detail = '任务启动中，正在等待进度信�
   els.fill.className = 'progress-fill indeterminate';
   els.fill.style.width = '';
   els.detail.textContent = detail;
+  els.track?.removeAttribute('aria-valuenow');
+  setLogCollapsed(false);
 }
 
 function updateProgress(done, total, detail = '') {
@@ -952,6 +1012,7 @@ function updateProgress(done, total, detail = '') {
     els.percent.textContent = '进行中';
     els.fill.className = 'progress-fill indeterminate';
     els.fill.style.width = '';
+    els.track?.removeAttribute('aria-valuenow');
     if (detail) els.detail.textContent = detail;
     return;
   }
@@ -960,6 +1021,7 @@ function updateProgress(done, total, detail = '') {
   els.percent.textContent = `${percent}%`;
   els.fill.className = 'progress-fill';
   els.fill.style.width = `${percent}%`;
+  els.track?.setAttribute('aria-valuenow', String(percent));
   els.detail.textContent = detail || `已处理 ${safeDone}/${safeTotal}`;
 }
 
@@ -973,6 +1035,7 @@ function finishProgress(success, detail) {
   els.percent.textContent = success ? '100%' : '失败';
   els.fill.className = `progress-fill ${success ? 'success' : 'error'}`;
   els.fill.style.width = '100%';
+  els.track?.setAttribute('aria-valuenow', success ? '100' : '0');
   els.detail.textContent = detail || (success ? '任务已完成' : '任务失败，请查看运行日志');
 }
 
@@ -1152,6 +1215,11 @@ async function loadProviderManifests() {
     return;
   }
   const manifests = Array.isArray(result.providers) ? result.providers : [];
+  const manifestErrors = Array.isArray(result.errors) ? result.errors : [];
+  manifestErrors.forEach((message) => appendDetailedLog('provider', 'error', message));
+  if (manifestErrors.length) {
+    appendUserLog(`有 ${manifestErrors.length} 个本地 Provider 配置无效，已安全忽略。详情请查看详细日志。`, 'warn');
+  }
   if (!manifests.length) return;
   PROVIDER_REGISTRY.registerMany(manifests);
   refreshProviderTools();
@@ -1191,8 +1259,10 @@ function primaryNavIdFor(toolId = currentTool) {
 function setToolHeading(title, description) {
   const titleNode = document.getElementById('tool-title');
   const descriptionNode = document.getElementById('tool-description');
+  const labelNode = document.querySelector('.tool-heading-label');
   if (titleNode) titleNode.textContent = title || '万能导 Wandao';
   if (descriptionNode) descriptionNode.textContent = description || '';
+  if (labelNode) labelNode.textContent = primaryNavIdFor() === 'platform-center' ? '平台工作区' : '万能导工作台';
 }
 
 function setTaskHistoryVisible(visible) {
@@ -1267,7 +1337,6 @@ function providerFeatureTags(provider) {
   if (provider.capabilities?.export) tags.add('导出');
   if (provider.capabilities?.import || provider.isImport) tags.add('导入');
   if (provider.type === 'guide' || provider.capabilities?.guide) tags.add('教程');
-  if (provider.capabilities?.retryFailures) tags.add('失败重试');
   return Array.from(tags);
 }
 
@@ -1287,20 +1356,45 @@ function providerPlatformSiblings(provider) {
   return group ? group.providers : [provider];
 }
 
+function navigationIcon(name) {
+  const paths = {
+    home: '<path d="M3 10.5 12 3l9 7.5v9A1.5 1.5 0 0 1 19.5 21h-15A1.5 1.5 0 0 1 3 19.5v-9Z"/><path d="M9 21v-7h6v7"/>',
+    platforms: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+    tasks: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/>',
+    notice: '<path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7l-4 2V6a2 2 0 0 1 2-2Z"/><path d="M8 9h8M8 13h6"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.08-1l2-1.5-2-3.46-2.35.95a7 7 0 0 0-1.72-1L14.5 3h-5l-.35 2.99a7 7 0 0 0-1.72 1L5.08 6.04l-2 3.46L5.08 11a7 7 0 0 0 0 2l-2 1.5 2 3.46 2.35-.95a7 7 0 0 0 1.72 1L9.5 21h5l.35-2.99a7 7 0 0 0 1.72-1l2.35.95 2-3.46-2-1.5c.05-.33.08-.66.08-1Z"/>'
+  };
+  return `<svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.platforms}</svg>`;
+}
+
+function platformMark(group) {
+  const label = String(group?.name || group?.key || 'W').trim();
+  if (/^[A-Za-z]/.test(label)) return label.slice(0, 2).toUpperCase();
+  return label.slice(0, 1);
+}
+
 function renderProviderNavigation() {
   const sidebar = document.getElementById('provider-sidebar') || document.querySelector('.sidebar');
   if (!sidebar) return;
   const activeId = primaryNavIdFor();
   sidebar.innerHTML = `
+    <div class="sidebar-intro">
+      <span>知识迁移</span>
+      <strong>从这里开始</strong>
+    </div>
     <details class="nav-group" open>
       <summary>工作台</summary>
       ${PRIMARY_NAV_ITEMS.map((item) => `
-        <button class="nav-item ${item.id === activeId ? 'active' : ''}" data-tool="${escapeHtml(item.id)}">
-          <span>${escapeHtml(item.label)}</span>
-          <small>${escapeHtml(item.description)}</small>
+        <button class="nav-item ${item.id === activeId ? 'active' : ''}" data-tool="${escapeHtml(item.id)}" type="button" ${item.id === activeId ? 'aria-current="page"' : ''}>
+          ${navigationIcon(item.icon)}
+          <span class="nav-copy">
+            <strong>${escapeHtml(item.label)}</strong>
+            <small>${escapeHtml(item.description)}</small>
+          </span>
         </button>
       `).join('')}
     </details>
+    <div class="sidebar-footnote">本地优先 · Markdown 归档</div>
   `;
 }
 
@@ -1532,7 +1626,7 @@ function bindNoticeCenterActions(root) {
 
 function renderHomePage() {
   setTaskHistoryVisible(false);
-  setToolHeading('首页', '选择平台，或查看最近任务。');
+  setToolHeading('首页', '选择一个平台，开始导出、导入或继续最近任务。');
   const groups = platformGroups();
   const providers = allProviders();
   const exportCount = providers.filter((provider) => provider.capabilities?.export).length;
@@ -1541,32 +1635,45 @@ function renderHomePage() {
   const contentArea = document.getElementById('content-area');
   contentArea.innerHTML = `
     <section class="home-hero">
-      <div>
-        <p class="view-kicker">万能导 Wandao</p>
-        <h3>多平台文档导入导出，从一个清晰入口开始。</h3>
-        <p>先选择平台，再选择导出、导入或查看教程。最近任务会统一记录，方便继续处理。</p>
+      <div class="home-hero-copy">
+        <p class="view-kicker">本地优先的知识迁移工具</p>
+        <h3>让每一份知识，都有可带走的归档。</h3>
+        <p>选择来源平台，万能导会尽量保留目录、正文和图片，并整理为清晰的 Markdown。</p>
+        <div class="home-hero-actions">
+          <button class="btn-primary" data-switch-view="platform-center" type="button">选择平台</button>
+          <button class="btn-on-dark" data-switch-view="task-center" type="button">继续最近任务</button>
+        </div>
       </div>
-      <div class="home-hero-actions">
-        <button class="btn-primary" data-switch-view="platform-center" type="button">进入平台中心</button>
-        <button class="btn-secondary" data-switch-view="task-center" type="button">查看任务</button>
+      <div class="knowledge-route" aria-label="知识归档流程">
+        <span class="route-label">清晰的三步流程</span>
+        <div class="route-flow">
+          <span class="route-node"><small>第一步</small><strong>选择平台</strong></span>
+          <span class="route-connector" aria-hidden="true"></span>
+          <span class="route-node"><small>第二步</small><strong>执行任务</strong></span>
+          <span class="route-connector" aria-hidden="true"></span>
+          <span class="route-node route-node-final"><small>完成</small><strong>本地 Markdown</strong></span>
+        </div>
+        <p>任务过程、失败原因和断点恢复统一记录。</p>
       </div>
     </section>
     <section class="metric-grid">
-      <article class="metric-card"><strong>${groups.length}</strong><span>已接入平台</span></article>
-      <article class="metric-card"><strong>${exportCount}</strong><span>导出能力</span></article>
-      <article class="metric-card"><strong>${importCount}</strong><span>导入能力</span></article>
-      <article class="metric-card"><strong>${guideCount}</strong><span>教程</span></article>
+      <article class="metric-card"><span>已接入平台</span><strong>${groups.length}</strong></article>
+      <article class="metric-card"><span>可用导出</span><strong>${exportCount}</strong></article>
+      <article class="metric-card"><span>可用导入</span><strong>${importCount}</strong></article>
+      <article class="metric-card"><span>平台教程</span><strong>${guideCount}</strong></article>
     </section>
     <section class="home-grid">
-      <article class="home-card">
-        <h4>平台中心</h4>
-        <p>选择飞书、语雀、有道、阿里云、OneNote、为知等平台。</p>
-        <button class="btn-secondary" data-switch-view="platform-center" type="button">查看平台</button>
+      <article class="home-card home-card-primary">
+        <span class="card-eyebrow">开始新任务</span>
+        <h4>从常用平台带走知识</h4>
+        <p>飞书、语雀、有道、阿里云、OneNote、为知等平台都从同一个入口开始。</p>
+        <button class="btn-primary" data-switch-view="platform-center" type="button">打开平台中心</button>
       </article>
       <article class="home-card">
-        <h4>任务中心</h4>
+        <span class="card-eyebrow">继续处理</span>
+        <h4>任务记录不会散落</h4>
         <p>查看最近导入导出记录，复制报告和失败项，继续或重试支持恢复的任务。</p>
-        <button class="btn-secondary" data-switch-view="task-center" type="button">查看任务</button>
+        <button class="btn-secondary" data-switch-view="task-center" type="button">查看任务中心</button>
       </article>
     </section>
   `;
@@ -1578,16 +1685,19 @@ function renderPlatformCard(group) {
   return `
     <article class="platform-card">
       <div class="platform-card-main">
-        <div class="platform-card-topline">
-          <h3>${escapeHtml(group.name)}</h3>
-          <span>${group.providers.length} 个动作</span>
+        <div class="platform-card-header">
+          <span class="platform-mark" aria-hidden="true">${escapeHtml(platformMark(group))}</span>
+          <div class="platform-card-topline">
+            <h3>${escapeHtml(group.name)}</h3>
+            <span>${group.providers.length} 个操作</span>
+          </div>
         </div>
         <p>${escapeHtml(group.description || '进入后选择具体操作。')}</p>
         <div class="provider-tags">
           ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
         </div>
       </div>
-      <button class="btn-primary" data-platform-key="${escapeHtml(group.key)}" type="button">进入平台</button>
+      <button class="btn-secondary card-action" data-platform-key="${escapeHtml(group.key)}" type="button">查看操作 <span aria-hidden="true">→</span></button>
     </article>
   `;
 }
@@ -1598,14 +1708,14 @@ function renderPlatformCenterPage() {
   const groups = platformGroups();
   const contentArea = document.getElementById('content-area');
   contentArea.innerHTML = `
-    <section class="view-panel">
+    <section class="view-panel platform-center-hero">
       <div class="view-panel-header">
         <div>
-          <p class="view-kicker">平台中心</p>
-          <h3>先选平台，再选择你要做的事。</h3>
-          <p>不同平台会展示不同操作，按当前平台实际支持的能力进入即可。</p>
+          <p class="view-kicker">${groups.length} 个平台已经就绪</p>
+          <h3>你想从哪个平台开始？</h3>
+          <p>进入平台后再选择导出、导入或教程，不同平台只展示自己真正支持的操作。</p>
         </div>
-        <button class="btn-secondary" data-switch-view="task-center" type="button">查看最近任务</button>
+        <button class="btn-secondary" data-switch-view="task-center" type="button">最近任务</button>
       </div>
     </section>
     <section class="platform-grid">
@@ -1621,14 +1731,14 @@ function renderProviderActionCard(provider) {
   return `
     <article class="provider-action-card ${tone}">
       <div>
-        <div class="provider-action-label">${escapeHtml(providerActionLabel(provider))}</div>
+        <div class="provider-action-label"><span aria-hidden="true"></span>${escapeHtml(providerActionLabel(provider))}</div>
         <h4>${escapeHtml(provider.title || provider.name || provider.id)}</h4>
         <p>${escapeHtml(provider.description || '')}</p>
         <div class="provider-tags compact">
           ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
         </div>
       </div>
-      <button class="${tone === 'export' ? 'btn-primary' : 'btn-secondary'}" data-open-provider="${escapeHtml(provider.id)}" type="button">打开</button>
+      <button class="${tone === 'export' ? 'btn-primary' : 'btn-secondary'}" data-open-provider="${escapeHtml(provider.id)}" type="button">开始</button>
     </article>
   `;
 }
@@ -1646,13 +1756,18 @@ function renderPlatformDetailPage(key) {
   const contentArea = document.getElementById('content-area');
   contentArea.innerHTML = `
     <section class="platform-detail-hero">
-      <div>
+      <div class="platform-detail-main">
         <button class="btn-text" data-switch-view="platform-center" type="button">返回平台中心</button>
-        <p class="view-kicker">平台</p>
-        <h3>${escapeHtml(group.name)}</h3>
-        <p>${escapeHtml(group.description || '')}</p>
-        <div class="provider-tags">
-          ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
+        <div class="platform-detail-title">
+          <span class="platform-mark large" aria-hidden="true">${escapeHtml(platformMark(group))}</span>
+          <div>
+            <p class="view-kicker">平台</p>
+            <h3>${escapeHtml(group.name)}</h3>
+            <p>${escapeHtml(group.description || '')}</p>
+            <div class="provider-tags">
+              ${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}
+            </div>
+          </div>
         </div>
       </div>
       <button class="btn-secondary" data-switch-view="task-center" type="button">查看历史任务</button>
@@ -1873,15 +1988,16 @@ async function chooseBrowserFile() {
 
 function renderSettingsPage() {
   setTaskHistoryVisible(false);
-  setToolHeading('设置', '调整显示、更新、日志和浏览器自动化偏好。');
+  setToolHeading('设置', '管理自动化浏览器、显示和应用信息。');
   const contentArea = document.getElementById('content-area');
   contentArea.innerHTML = `
     <section class="settings-grid">
-      <article class="home-card settings-card-wide">
+      <article class="settings-card settings-card-wide">
         <div class="settings-card-head">
           <div>
+            <span class="card-eyebrow">自动化环境</span>
             <h4>自动化浏览器</h4>
-            <p>登录、读取网页目录和部分平台导出需要调用 Chrome、Edge 或 Chromium。</p>
+            <p>登录和部分网页读取会使用 Chrome、Edge 或 Chromium。</p>
           </div>
           <span class="settings-status ${browserStatusClass()}">${escapeHtml(browserStatusText())}</span>
         </div>
@@ -1894,32 +2010,36 @@ function renderSettingsPage() {
         </div>
         ${renderBrowserList()}
         <div class="settings-actions">
-          <button class="btn-secondary" data-settings-action="detect-browser" type="button">检测可用浏览器</button>
           <button class="btn-primary" id="settings-browser-save" data-settings-action="save-browser" type="button">保存选择</button>
+          <button class="btn-secondary" data-settings-action="detect-browser" type="button">重新检测</button>
           <button class="btn-secondary" data-settings-action="choose-browser" type="button">手动选择浏览器</button>
           <button class="btn-text" data-settings-action="download-browser" type="button">下载 Chrome</button>
         </div>
       </article>
     </section>
     <section class="settings-grid">
-      <article class="home-card">
+      <article class="settings-card settings-card-compact">
+        <span class="card-eyebrow">外观</span>
         <h4>显示模式</h4>
         <p>当前主题：${document.body.dataset.theme === 'dark' ? '夜间模式' : '日间模式'}</p>
         <button class="btn-secondary" data-settings-action="theme" type="button">切换主题</button>
       </article>
-      <article class="home-card">
+      <article class="settings-card settings-card-compact">
+        <span class="card-eyebrow">应用</span>
         <h4>版本更新</h4>
-        <p>检查 GitHub Releases 是否有新版安装包。</p>
+        <p>从 GitHub Releases 检查新版本。</p>
         <button class="btn-secondary" data-settings-action="check-update" type="button">检查更新</button>
       </article>
-      <article class="home-card">
+      <article class="settings-card settings-card-compact">
+        <span class="card-eyebrow">诊断</span>
         <h4>日志显示</h4>
         <p data-settings-log-mode-summary>当前显示：${logViewMode === 'detail' ? '详细日志' : '用户日志'}</p>
         <button class="btn-secondary" data-settings-action="log-mode" type="button">切换日志</button>
       </article>
-      <article class="home-card">
+      <article class="settings-card settings-card-compact">
+        <span class="card-eyebrow">帮助</span>
         <h4>关于</h4>
-        <p>查看版本、项目地址和使用帮助。</p>
+        <p>查看版本、项目地址和许可证。</p>
         <button class="btn-secondary" data-settings-action="about" type="button">关于万能导</button>
       </article>
     </section>
@@ -1956,11 +2076,22 @@ function renderSettingsPage() {
 }
 
 function renderTaskCenterPage() {
-  setToolHeading('任务中心', '查看最近任务。');
+  setToolHeading('任务中心', '查看进度、失败原因，并继续支持恢复的任务。');
   const contentArea = document.getElementById('content-area');
-  contentArea.innerHTML = '';
+  const resumableCount = taskHistory.filter(canResumeTask).length;
+  contentArea.innerHTML = `
+    <section class="task-center-hero">
+      <div>
+        <p class="view-kicker">任务记录</p>
+        <h3>${taskHistory.length ? `已记录 ${taskHistory.length} 个任务` : '还没有任务记录'}</h3>
+        <p>${resumableCount ? `${resumableCount} 个任务可以继续或重试。` : '开始一次导入或导出后，进度和报告会显示在这里。'}</p>
+      </div>
+      <button class="btn-primary" data-switch-view="platform-center" type="button">开始新任务</button>
+    </section>
+  `;
   setTaskHistoryVisible(true);
   renderTaskHistory();
+  bindWorkbenchActions(contentArea);
 }
 
 function renderNoticeDocBody(selected) {
@@ -2078,7 +2209,7 @@ function renderProviderModeSwitcher(provider) {
   switcher.className = 'provider-mode-switcher';
   switcher.innerHTML = `
     <div>
-      <span>当前平台</span>
+      <span>当前平台操作</span>
       <strong>${escapeHtml(group?.name || platformKey(provider))}</strong>
     </div>
     <div class="provider-mode-buttons">
@@ -2091,6 +2222,20 @@ function renderProviderModeSwitcher(provider) {
   `;
   contentArea.prepend(switcher);
   bindWorkbenchActions(switcher);
+}
+
+function normalizeActionHierarchy(root = document.getElementById('content-area')) {
+  if (!root) return;
+  root.querySelectorAll('.action-section .btn-primary').forEach((button) => {
+    const label = String(button.textContent || '').trim();
+    const isPrimaryAction = /^(开始|批量)(导出|导入)/.test(label)
+      || /^(导出|导入)全部/.test(label)
+      || /^(开始处理|执行导出|执行导入)$/.test(label);
+    if (!isPrimaryAction) {
+      button.classList.remove('btn-primary');
+      button.classList.add('btn-secondary');
+    }
+  });
 }
 
 function renderAppView(viewId) {
@@ -2666,6 +2811,7 @@ function switchTool(toolId) {
     renderGenericProviderForm(config);
   }
   renderProviderModeSwitcher(config);
+  normalizeActionHierarchy(contentArea);
 }
 
 // Initialize tool event handlers
@@ -4737,16 +4883,25 @@ function initializeFeishuImportHandlers() {
   });
 }
 
-// Initialize app
-document.addEventListener('DOMContentLoaded', async () => {
+// Initialize the shell immediately; slower provider discovery continues in the background.
+document.addEventListener('DOMContentLoaded', () => {
   applyTheme(loadTheme());
-  await loadAppSettings();
-  try {
-    await loadProviderManifests();
-  } catch (error) {
-    appendDetailedLog('provider', 'error', formatError(error));
-  }
   renderProviderNavigation();
+
+  loadAppSettings().then(() => {
+    if (currentTool === 'settings' && !isRunning) renderSettingsPage();
+  }).catch((error) => {
+    appendDetailedLog('settings', 'error', formatError(error));
+  });
+
+  loadProviderManifests().then(() => {
+    renderProviderNavigation();
+    if ((currentTool === 'home' || currentTool === 'platform-center') && !isRunning) {
+      renderAppView(currentTool);
+    }
+  }).catch((error) => {
+    appendDetailedLog('provider', 'error', formatError(error));
+  });
 
   // Setup navigation
   document.getElementById('provider-sidebar')?.addEventListener('click', (event) => {
@@ -4757,6 +4912,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Setup footer buttons
   document.getElementById('btn-clear-log').addEventListener('click', clearLog);
+  document.getElementById('btn-toggle-log')?.addEventListener('click', () => {
+    const section = document.getElementById('log-section');
+    setLogCollapsed(!section?.classList.contains('is-collapsed'));
+  });
   document.getElementById('btn-copy-error-report')?.addEventListener('click', () => {
     copyDeveloperReport().catch((error) => {
       log(`复制错误报告失败：${formatError(error)}`, 'error');
@@ -4804,16 +4963,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('btn-settings').addEventListener('click', toggleLogViewMode);
   renderLogPanel();
+  setLogCollapsed(true);
 
   window.electronAPI.getAppPath().then((paths) => {
     appPaths = paths;
     loadTaskHistory().catch((error) => log(`读取任务历史失败：${formatError(error)}`, 'error'));
-    switchTool(DEFAULT_VIEW_ID);
+    if (currentTool === DEFAULT_VIEW_ID) switchTool(DEFAULT_VIEW_ID);
     log('万能导已启动', 'success');
     window.setTimeout(() => checkForUpdates(true), 1000);
   }).catch(() => {
     renderTaskHistory();
-    switchTool(DEFAULT_VIEW_ID);
+    if (currentTool === DEFAULT_VIEW_ID) switchTool(DEFAULT_VIEW_ID);
     log('万能导已启动', 'success');
     window.setTimeout(() => checkForUpdates(true), 1000);
   });

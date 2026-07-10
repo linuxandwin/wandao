@@ -32,6 +32,56 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertFalse(preload_channels - main_channels)
         self.assertIn("run-python-command", preload_channels)
         self.assertIn("get-provider-manifests", preload_channels)
+        self.assertIn("protect-task-args", preload_channels)
+        self.assertIn("restore-task-args", preload_channels)
+
+    def test_task_history_encrypts_args_and_recovers_interrupted_tasks(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertIn("safeStorage.encryptString", main_js)
+        self.assertIn("safeStorage.decryptString", main_js)
+        self.assertIn("persistable.protectedArgs = protectedResult.payload", app_js)
+        self.assertIn("persistable.args = []", app_js)
+        self.assertIn("task.status === 'running' || task.status === 'stopping'", app_js)
+        self.assertIn("task.status = 'interrupted'", app_js)
+
+    def test_python_process_lock_is_released_only_by_the_owned_process(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+
+        self.assertIn("if (pythonProcess === proc)", main_js)
+        stop_start = main_js.index("ipcMain.handle('stop-python-process'")
+        stop_handler = main_js[stop_start : stop_start + 900]
+        self.assertNotIn("pythonProcess = null", stop_handler)
+        self.assertIn("pythonProcessStopping = true", stop_handler)
+
+    def test_process_and_task_logs_are_bounded(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+        app_js = read_text("wandao_electron/renderer/app.js")
+
+        self.assertIn("const MAX_PROCESS_OUTPUT_CHARS", main_js)
+        self.assertIn("function appendOutputTail", main_js)
+        self.assertIn("const MAX_TASK_LOG_ENTRIES", app_js)
+        self.assertIn("activeTaskLogEntries.push(entry)", app_js)
+        self.assertIn("task.logs = [...activeTaskLogEntries]", app_js)
+        self.assertNotIn("task.logs = detailLogEntries.slice", app_js)
+
+    def test_runtime_provider_validation_fails_closed(self) -> None:
+        main_js = read_text("wandao_electron/main.js")
+
+        self.assertIn("function validateProviderManifestRuntime", main_js)
+        self.assertIn("Provider 目录名必须和 ID 一致", main_js)
+        self.assertIn("actions[${index}].script 无效", main_js)
+        self.assertNotIn("pluginScriptRef(id, action && action.script, providerRoot) || provider.script", main_js)
+
+    def test_python_runtime_build_is_pinned_and_verified(self) -> None:
+        runtime_script = read_text("wandao_electron/scripts/prepare_python_runtime.py")
+
+        self.assertIn('PYTHON_STANDALONE_RELEASE = "20260623"', runtime_script)
+        self.assertNotIn("releases/latest", runtime_script)
+        self.assertIn('"sha256":', runtime_script)
+        self.assertIn("def verify_archive", runtime_script)
+        self.assertIn("verify_archive(temporary, expected_sha256)", runtime_script)
 
     def test_preload_does_not_expose_raw_ipc_or_node_modules(self) -> None:
         preload_js = read_text("wandao_electron/preload.js")
@@ -81,6 +131,15 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("trimRenderedLogEntries(logContent)", app_js)
         self.assertIn("为保持界面流畅", app_js)
 
+    def test_startup_does_not_wait_for_provider_discovery(self) -> None:
+        app_js = read_text("wandao_electron/renderer/app.js")
+        startup = app_js[app_js.index("document.addEventListener('DOMContentLoaded'") :]
+
+        self.assertLess(startup.index("renderProviderNavigation();"), startup.index("loadProviderManifests().then"))
+        self.assertNotIn("await loadProviderManifests()", startup)
+        self.assertIn("currentTool === 'home' || currentTool === 'platform-center'", startup)
+        self.assertEqual(startup.count("if (currentTool === DEFAULT_VIEW_ID) switchTool(DEFAULT_VIEW_ID);"), 2)
+
     def test_settings_log_toggle_does_not_rerender_whole_settings_page(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
 
@@ -91,6 +150,34 @@ class ElectronHealthTests(unittest.TestCase):
         self.assertIn("toggleLogViewMode()", handler)
         self.assertIn("data-settings-log-mode-summary", app_js)
         self.assertNotIn("renderSettingsPage()", handler)
+
+    def test_desktop_design_system_keeps_accessible_app_shell(self) -> None:
+        index_html = read_text("wandao_electron/renderer/index.html")
+        styles = read_text("wandao_electron/renderer/styles.css")
+        app_js = read_text("wandao_electron/renderer/app.js")
+        design = read_text("wandao_electron/DESIGN.md")
+
+        self.assertIn('--brand: #9fe870', styles)
+        self.assertIn('--surface: #e8ebe6', styles)
+        self.assertIn('--r-lg: 24px', styles)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', styles)
+        self.assertIn('class="skip-link"', index_html)
+        self.assertIn('id="main-content" tabindex="-1"', index_html)
+        self.assertIn('role="progressbar"', index_html)
+        self.assertIn('id="btn-toggle-log"', index_html)
+        self.assertIn("function setLogCollapsed", app_js)
+        self.assertIn("function normalizeActionHierarchy", app_js)
+        self.assertIn("选择平台 -> 执行任务 -> 本地 Markdown", design)
+
+    def test_build_workflow_uses_supported_node_version(self) -> None:
+        workflow = read_text(".github/workflows/build-desktop.yml")
+        package = json.loads(read_text("wandao_electron/package.json"))
+
+        self.assertEqual(workflow.count('node-version: "22"'), 2)
+        self.assertEqual(package["engines"]["node"], ">=22.12.0")
+        self.assertEqual(package["build"]["electronDist"], "node_modules/electron/dist")
+        self.assertFalse(package["build"]["win"]["signExecutable"])
+        self.assertNotIn("signAndEditExecutable", package["build"]["win"])
 
     def test_task_history_has_minimal_failure_diagnostics(self) -> None:
         app_js = read_text("wandao_electron/renderer/app.js")
@@ -205,12 +292,12 @@ class ElectronHealthTests(unittest.TestCase):
         package_json = read_text("wandao_electron/package.json")
         pyproject = read_text("pyproject.toml")
 
-        self.assertIn('"version": "1.2.6"', package_json)
+        self.assertIn('"version": "1.2.7"', package_json)
         self.assertIn('"from": "../wandao_checkpoint.py"', package_json)
         self.assertIn('"to": "python/wandao_checkpoint.py"', package_json)
         self.assertIn('"from": "../wandao_cli.py"', package_json)
         self.assertIn('"to": "python/wandao_cli.py"', package_json)
-        self.assertIn('version = "1.2.6"', pyproject)
+        self.assertIn('version = "1.2.7"', pyproject)
         self.assertIn('"wandao_checkpoint"', pyproject)
         self.assertIn('"wandao_cli"', pyproject)
 
@@ -230,6 +317,7 @@ class ElectronHealthTests(unittest.TestCase):
             "wandao_report.py",
             "wandao_checkpoint.py",
             "wandao_cli.py",
+            "wandao_credentials.py",
             "gui_utils.py",
         }
 

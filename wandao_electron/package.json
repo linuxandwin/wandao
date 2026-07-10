@@ -1,6 +1,6 @@
 {
   "name": "wandao",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Wandao multi-platform document conversion tool",
   "main": "main.js",
   "scripts": {
@@ -28,17 +28,21 @@
   ],
   "author": "tllovesxs",
   "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/tllovesxs/wandao.git"
   },
   "devDependencies": {
-    "electron": "^28.0.0",
-    "electron-builder": "^24.9.1"
+    "electron": "^39.8.5",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.wandao.app",
     "productName": "Wandao",
+    "electronDist": "node_modules/electron/dist",
     "publish": [
       {
         "provider": "github",
@@ -126,6 +130,10 @@
         "to": "python/wandao_cli.py"
       },
       {
+        "from": "../wandao_credentials.py",
+        "to": "python/wandao_credentials.py"
+      },
+      {
         "from": "../requirements.txt",
         "to": "python/requirements.txt"
       },
@@ -148,7 +156,7 @@
         "nsis"
       ],
       "icon": "assets/icon.ico",
-      "signAndEditExecutable": false
+      "signExecutable": false
     },
     "nsis": {
       "oneClick": false,

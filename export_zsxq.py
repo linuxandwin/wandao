@@ -61,6 +61,7 @@ from export_aliyun_thoughts import (
 )
 from wandao_report import finalize_report
 from wandao_checkpoint import WandaoCheckpoint
+from wandao_credentials import write_private_json
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -200,8 +201,7 @@ def save_auth_state(cdp: CDPClient, auth_file: Path, entry_url: str) -> dict[str
         "savedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "cookies": cookies,
     }
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
-    auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(auth_file, payload)
     return {"cookieCount": len(cookies), "authFile": str(auth_file)}
 
 
@@ -212,7 +212,7 @@ def annotate_auth_state(auth_file: Path, account: dict[str, Any]) -> None:
         payload = json.loads(auth_file.read_text(encoding="utf-8"))
         payload["account"] = account
         payload["verifiedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_private_json(auth_file, payload)
     except Exception:
         return
 
@@ -3061,6 +3061,17 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         output_key = str(output.resolve()).lower()
         source_count = args.limit if use_group_topics else (len(toc_items) if use_toc else len(links))
         source_mode = "group" if use_group_topics else ("toc" if use_toc else "links")
+        if checkpoint and not use_group_topics:
+            checkpoint.start_task(
+                {
+                    "source": entry_url,
+                    "outputDir": str(output),
+                    "sourceMode": source_mode,
+                    "totalDocs": source_count,
+                    "resume": bool(getattr(args, "resume", False)),
+                    "retryFailed": bool(getattr(args, "retry_failed", False)),
+                }
+            )
         emit(
             args,
             f"开始导出知识星球内容：共 {source_count} 个来源条目。",
@@ -3130,6 +3141,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
             root_sequence = max(root_sequence, 1)
             overview_path = output / "01-专栏正文.md"
             overview_key = str(entry.get("url") or entry_url)
+            overview_item_key = zsxq_item_key_from_source({"href": overview_key, "key": "overview"})
             overview_existing = next((existing[key] for key in canonical_url_keys(overview_key) if key in existing), None)
             overview_needs_comment_update = bool(
                 args.incremental
@@ -3138,8 +3150,19 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                 and should_update_existing_for_comments(args, overview_existing)
             )
             if args.incremental and overview_existing and not args.update_existing and not overview_needs_comment_update:
+                if checkpoint and overview_item_key:
+                    checkpoint.complete_item(overview_item_key, local_path=str(overview_existing), metadata={"source": overview_key, "skippedExisting": True})
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_existing)})
             else:
+                if checkpoint and overview_item_key:
+                    checkpoint.upsert_item(
+                        overview_item_key,
+                        title=str(entry.get("title") or "专栏正文"),
+                        source_url=overview_key,
+                        source_id="",
+                        metadata={"source": {"href": overview_key, "kind": "overview"}},
+                    )
+                    checkpoint.start_item(overview_item_key, "content")
                 if overview_needs_comment_update and overview_existing:
                     overview_path = overview_existing
                     comments_updated_existing += 1
@@ -3171,7 +3194,7 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     args.keep_remote_images,
                     args,
                     checkpoint,
-                    checkpoint_item_key,
+                    overview_item_key,
                 )
                 image_success += count
                 if img_errors:
@@ -3187,6 +3210,11 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                             error={"message": failure.get("error", "")},
                         )
                 overview_path.write_text(markdown, encoding="utf-8")
+                if checkpoint and overview_item_key:
+                    if img_errors:
+                        checkpoint.fail_item(overview_item_key, f"{len(img_errors)} 个图片下载失败")
+                    else:
+                        checkpoint.complete_item(overview_item_key, local_path=str(overview_path), metadata={"source": overview_key})
                 exported_rows.append({"title": entry.get("title") or "专栏正文", "path": str(overview_path)})
                 emit(
                     args,
@@ -3543,6 +3571,8 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                     args.download_timeout,
                     args.keep_remote_images,
                     args,
+                    checkpoint,
+                    checkpoint_item_key,
                 )
                 image_success += count
                 if img_errors:
@@ -3584,7 +3614,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
                             )
                 md_path.write_text(markdown, encoding="utf-8")
                 if checkpoint and checkpoint_item_key:
-                    checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
+                    if img_errors or file_errors:
+                        checkpoint.fail_item(
+                            checkpoint_item_key,
+                            f"{len(img_errors)} 个图片、{len(file_errors)} 个附件下载失败",
+                        )
+                    else:
+                        checkpoint.complete_item(checkpoint_item_key, local_path=str(md_path), metadata={"source": item})
                 if depth == 1:
                     exported_rows.append({"title": title, "path": str(md_path)})
                 exported += 1
@@ -3748,8 +3784,13 @@ def export_entry(args: argparse.Namespace) -> dict[str, Any]:
         if checkpoint:
             if stopped:
                 checkpoint.fail_task("stopped", status="stopped")
-            elif failures:
-                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            elif failures or image_failures or file_failures:
+                checkpoint.fail_task(
+                    f"{len(failures)} 个文档失败，"
+                    f"{sum(len(item['failures']) for item in image_failures)} 个图片失败，"
+                    f"{sum(len(item['failures']) for item in file_failures)} 个附件失败",
+                    status="failed",
+                )
             else:
                 checkpoint.complete_task(report)
         return report

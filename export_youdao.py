@@ -32,6 +32,7 @@ from typing import Any
 
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_cli import extend_arg_list_from_file
+from wandao_credentials import write_private_json
 from wandao_logging import emit_legacy
 from wandao_report import finalize_report
 
@@ -236,8 +237,7 @@ def save_auth_state(cdp: CDPClient, auth_file: Path) -> dict[str, Any]:
         "savedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "cookies": cookies,
     }
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
-    auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(auth_file, payload)
     return {"provider": "youdao", "cookieCount": len(cookies), "authFile": str(auth_file)}
 
 
@@ -1140,6 +1140,7 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
             )
             downloaded = client.download_file(node.id)
             markdown, is_markdown = convert_note_to_markdown(node, downloaded)
+            resource_failures_before = stats["imageFailureCount"] + stats["attachmentFailureCount"]
             if is_markdown:
                 md_path = md_or_file_path.with_suffix(".md")
                 md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1156,7 +1157,13 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
 
             exported += 1
             if checkpoint:
-                checkpoint.complete_item(item_key, local_path=str(row_file), metadata={"id": node.id, "path": node.path_parts})
+                resource_failures_in_doc = (
+                    stats["imageFailureCount"] + stats["attachmentFailureCount"] - resource_failures_before
+                )
+                if resource_failures_in_doc:
+                    checkpoint.fail_item(item_key, f"{resource_failures_in_doc} 个图片或附件下载失败")
+                else:
+                    checkpoint.complete_item(item_key, local_path=str(row_file), metadata={"id": node.id, "path": node.path_parts})
             rows.append(
                 {
                     "title": node.title,
@@ -1203,15 +1210,19 @@ def export_youdao(args: argparse.Namespace) -> dict[str, Any]:
     report = finalize_report(report, provider="youdao", mode="export", report_file=report_path, output=output)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if checkpoint:
-        if failures:
-            checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+        resource_failure_count = stats["imageFailureCount"] + stats["attachmentFailureCount"]
+        if failures or resource_failure_count:
+            checkpoint.fail_task(
+                f"{len(failures)} 个文档失败，{resource_failure_count} 个资源失败",
+                status="failed",
+            )
         else:
             checkpoint.complete_task(report)
         checkpoint.close()
     emit(
         "有道云笔记导出完成" if not failures else f"有道云笔记导出完成，但有 {len(failures)} 个失败项",
         event="task.completed",
-        level="success" if not failures else "warn",
+        level="success" if not failures and not (stats["imageFailureCount"] + stats["attachmentFailureCount"]) else "warn",
         reportFile=str(report_path),
         stats={"exportedDocs": exported, "skippedDocs": skipped, "failureCount": len(failures), **stats},
     )

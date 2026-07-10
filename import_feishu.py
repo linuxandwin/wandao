@@ -65,6 +65,7 @@ from export_feishu import (
     wait_for_wiki_ready,
 )
 from wandao_report import finalize_report
+from wandao_credentials import write_private_json
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -352,9 +353,7 @@ def load_import_config(config_file: str | Path | None = None) -> dict[str, Any]:
 
 def save_import_config(config_file: str | Path, data: dict[str, Any]) -> Path:
     path = Path(config_file).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    return write_private_json(path, data)
 
 
 def build_feishu_permission_url(app_id: str, scopes: list[str] | tuple[str, ...] | None = None) -> str:

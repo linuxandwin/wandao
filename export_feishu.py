@@ -62,6 +62,7 @@ from export_aliyun_thoughts import (
 )
 from wandao_checkpoint import add_checkpoint_args, open_checkpoint_from_args
 from wandao_cli import extend_arg_list_from_file
+from wandao_credentials import write_private_json
 from wandao_report import finalize_report
 
 
@@ -259,8 +260,7 @@ def save_auth_state(cdp: CDPClient, auth_file: Path, wiki_url: str, host: str) -
         "savedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "cookies": cookies,
     }
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
-    auth_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(auth_file, payload)
     return {"cookieCount": len(cookies), "authFile": str(auth_file)}
 
 
@@ -1171,7 +1171,10 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
                 md_path.parent.mkdir(parents=True, exist_ok=True)
                 md_path.write_text(markdown, encoding="utf-8")
                 if checkpoint:
-                    checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"doc": doc})
+                    if img_errors:
+                        checkpoint.fail_item(item_key, f"{len(img_errors)} 个图片下载失败")
+                    else:
+                        checkpoint.complete_item(item_key, local_path=str(md_path), metadata={"doc": doc})
                 exported += 1
                 emit(
                     args,
@@ -1247,15 +1250,18 @@ def export_wiki(args: argparse.Namespace) -> dict[str, Any]:
         if checkpoint:
             if stopped:
                 checkpoint.fail_task("stopped", status="stopped")
-            elif failures:
-                checkpoint.fail_task(f"{len(failures)} 个文档失败", status="failed")
+            elif failures or image_failures:
+                checkpoint.fail_task(
+                    f"{len(failures)} 个文档失败，{sum(len(item['failures']) for item in image_failures)} 个图片失败",
+                    status="failed",
+                )
             else:
                 checkpoint.complete_task(report)
         emit(
             args,
             "飞书导出完成" if not stopped else "飞书导出已停止",
             event="task.completed" if not stopped else "task.stopped",
-            level="success" if not stopped else "warn",
+            level="success" if not stopped and not failures and not image_failures else "warn",
             reportFile=str(report_path),
             stats={
                 "exportedDocs": exported,

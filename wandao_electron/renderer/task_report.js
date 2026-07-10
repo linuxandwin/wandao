@@ -152,6 +152,8 @@
   function statusText(status) {
     const map = {
       running: '进行中',
+      stopping: '正在停止',
+      interrupted: '已中断',
       completed: '已完成',
       failed: '失败',
       stopped: '已停止'
@@ -266,6 +268,24 @@
     return [];
   }
 
+  function taskFailureCount(task) {
+    const stats = task?.report?.stats || task?.stats || {};
+    const raw = task?.report?.raw || task?.resultData || {};
+    const explicitDocumentFailureKeys = ['failureCount', 'failedDocs', 'failed', 'errorCount'];
+    const explicitKey = explicitDocumentFailureKeys.find((key) => Object.prototype.hasOwnProperty.call(raw, key));
+    const hasResourceFailureLists = ['resourceFailures', 'imageFailures', 'attachmentFailures']
+      .some((key) => Array.isArray(raw[key]) && raw[key].length > 0);
+    const documentFailures = explicitKey
+      ? Number(raw[explicitKey] || 0)
+      : (Array.isArray(raw.failures) ? raw.failures.length : (hasResourceFailureLists ? 0 : Number(stats.failed || 0)));
+    const resourceFailures = Number(stats.resourceFailed || 0);
+    const typedResourceFailures = Number(stats.imageFailed || 0) + Number(stats.attachmentFailed || 0);
+    return (Number.isFinite(documentFailures) ? documentFailures : 0) + Math.max(
+      Number.isFinite(resourceFailures) ? resourceFailures : 0,
+      Number.isFinite(typedResourceFailures) ? typedResourceFailures : 0
+    );
+  }
+
   const api = {
     normalizeTaskReport,
     summarizeStats,
@@ -277,7 +297,8 @@
     maskArgs,
     createMarkdownTaskReport,
     taskArtifactPaths,
-    taskFailurePreview
+    taskFailurePreview,
+    taskFailureCount
   };
 
   root.WandaoTaskReport = api;

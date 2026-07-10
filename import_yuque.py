@@ -54,6 +54,7 @@ from export_yuque import (
     read_auth_cookies,
 )
 from wandao_report import finalize_report
+from wandao_credentials import write_private_json
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -100,9 +101,8 @@ def load_config(config_file: Path) -> dict[str, Any]:
 
 
 def save_config(config_file: Path, data: dict[str, Any]) -> None:
-    config_file.parent.mkdir(parents=True, exist_ok=True)
     safe_data = {key: value for key, value in data.items() if value not in (None, "")}
-    config_file.write_text(json.dumps(safe_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(config_file, safe_data)
 
 
 def configure_runtime(args: argparse.Namespace) -> None:

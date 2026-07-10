@@ -3,10 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
   <title>万能导 Wandao</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="app-container">
     <header class="app-header">
       <div class="brand">
@@ -17,15 +19,15 @@
         </div>
       </div>
       <div class="header-actions">
-        <button class="btn-secondary header-button" id="btn-check-update" type="button">检查更新</button>
-        <button class="btn-secondary header-button" id="btn-theme-toggle" type="button">夜间模式</button>
+        <button class="header-button" id="btn-check-update" type="button">检查更新</button>
+        <button class="header-button" id="btn-theme-toggle" type="button">夜间模式</button>
       </div>
     </header>
 
     <div class="workspace">
-      <aside class="sidebar" id="provider-sidebar"></aside>
+      <aside class="sidebar" id="provider-sidebar" aria-label="主导航"></aside>
 
-      <main class="app-main">
+      <main class="app-main" id="main-content" tabindex="-1">
         <section class="update-banner" id="update-banner" hidden>
           <div>
             <strong id="update-title">发现新版本</strong>
@@ -37,19 +39,20 @@
           </div>
         </section>
 
-        <section class="tool-heading">
+        <section class="tool-heading" aria-labelledby="tool-title">
+          <span class="tool-heading-label">工作台</span>
           <h2 id="tool-title">首页</h2>
           <p id="tool-description">选择平台，或查看最近任务。</p>
         </section>
 
         <div id="content-area"></div>
 
-        <section class="progress-section" id="progress-section" hidden>
+        <section class="progress-section" id="progress-section" role="status" aria-live="polite" hidden>
           <div class="progress-header">
             <span id="progress-title">准备中</span>
             <span id="progress-percent">0%</span>
           </div>
-          <div class="progress-track">
+          <div class="progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="progress-fill"></div>
           </div>
           <div class="progress-detail" id="progress-detail">等待任务开始</div>
@@ -66,22 +69,26 @@
               <button class="btn-text" id="btn-history-resume-last" type="button">继续上次任务</button>
             </div>
           </div>
-          <div class="task-history-list" id="task-history-list">
+          <div class="task-history-list" id="task-history-list" aria-live="polite">
             <div class="task-history-empty">暂无任务历史。</div>
           </div>
         </section>
 
-        <section class="log-section">
+        <section class="log-section is-collapsed" id="log-section" aria-labelledby="log-title">
           <div class="log-header">
-            <h3 id="log-title">用户日志</h3>
+            <div class="log-heading">
+              <span class="log-status-dot" aria-hidden="true"></span>
+              <h3 id="log-title">用户日志</h3>
+            </div>
             <div class="log-actions">
-              <button class="btn-text" id="btn-settings">设置</button>
+              <button class="btn-text" id="btn-toggle-log" type="button" aria-expanded="false">展开日志</button>
+              <button class="btn-text" id="btn-settings" type="button">详细日志</button>
               <button class="btn-text" id="btn-about">关于</button>
               <button class="btn-text" id="btn-copy-error-report">提交错误报告给开发者</button>
               <button class="btn-text" id="btn-clear-log">清空</button>
             </div>
           </div>
-          <div class="log-content" id="log-content"></div>
+          <div class="log-content" id="log-content" aria-live="polite" aria-atomic="false"></div>
         </section>
       </main>
     </div>

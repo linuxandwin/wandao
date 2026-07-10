@@ -300,6 +300,95 @@ class ZsxqGroupExportTests(unittest.TestCase):
         self.assertEqual(content["topicUid"], "22255488584842111")
         self.assertEqual(zsxq_item_key_from_source(content), "zsxq:topic:22255488584842111")
 
+    def test_column_overview_uses_own_checkpoint_key_before_queue_items(self) -> None:
+        class FakeCdp:
+            def close(self):
+                pass
+
+        toc = {
+            "href": "https://wx.zsxq.com/columns/15288445111222",
+            "title": "测试专栏",
+            "groups": [
+                {
+                    "key": "group:0",
+                    "groupIndex": 0,
+                    "groupTitle": "目录",
+                    "topics": [
+                        {
+                            "key": "toc:0:0",
+                            "title": "第一篇",
+                            "topicId": "55522515524115114",
+                            "topicUid": "55522515524115114",
+                            "topicUrl": "https://wx.zsxq.com/topic/55522515524115114",
+                        }
+                    ],
+                }
+            ],
+            "totalTopics": 1,
+        }
+        entry = {
+            "title": "测试专栏",
+            "url": "https://wx.zsxq.com/columns/15288445111222",
+            "markdown": "# 测试专栏\n![图](https://example.com/cover.png)",
+            "images": ["https://example.com/cover.png"],
+            "zsxqLinks": [],
+        }
+        topic = {
+            "title": "第一篇",
+            "markdown": "# 第一篇\n正文",
+            "images": [],
+            "files": [],
+            "topicId": "55522515524115114",
+            "topicUid": "55522515524115114",
+            "topicUrl": "https://wx.zsxq.com/topic/55522515524115114",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "out"
+            args = parse_args(
+                [
+                    "--entry-url",
+                    "https://wx.zsxq.com/columns/15288445111222",
+                    "--output",
+                    str(output),
+                    "--toc-mode",
+                    "toc",
+                    "--toc-key",
+                    "toc:0:0",
+                    "--max-depth",
+                    "1",
+                    "--skip-auth-load",
+                    "--checkpoint-file",
+                    str(root / "checkpoint.sqlite"),
+                ]
+            )
+
+            with (
+                mock.patch.object(export_zsxq, "connect_browser", return_value=(FakeCdp(), None)),
+                mock.patch.object(export_zsxq, "collect_toc", return_value=toc),
+                mock.patch.object(export_zsxq, "collect_entry_links", return_value=entry),
+                mock.patch.object(export_zsxq, "resolve_toc_item", return_value=topic),
+                mock.patch.object(export_zsxq, "download_image", side_effect=RuntimeError("blocked in test")),
+            ):
+                report = export_zsxq.export_entry(args)
+
+            overview = output / "01-专栏正文.md"
+            self.assertTrue(overview.exists())
+            self.assertEqual(report["exportedDocs"], 1)
+
+            checkpoint = WandaoCheckpoint.open(root / "checkpoint.sqlite", task_id="default", provider_id="zsxq", action="export")
+            try:
+                overview_key = zsxq_item_key_from_source({"href": "https://wx.zsxq.com/columns/15288445111222", "key": "overview"})
+                resource_key = zsxq_resource_key("image", "https://example.com/cover.png")
+
+                self.assertEqual(checkpoint.item_status(overview_key), "failed")
+                resource = checkpoint.resource_record(resource_key)
+                self.assertIsNotNone(resource)
+                self.assertEqual(resource["item_key"], overview_key)
+            finally:
+                checkpoint.close()
+
     def test_localize_files_rewrites_attachment_links_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             md_path = Path(tmp) / "doc.md"
