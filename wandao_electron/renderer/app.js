@@ -1382,8 +1382,8 @@ function renderProviderNavigation() {
       <span>知识迁移</span>
       <strong>从这里开始</strong>
     </div>
-    <details class="nav-group" open>
-      <summary>工作台</summary>
+    <nav class="nav-group" aria-label="工作台">
+      <span class="nav-group-label">工作台</span>
       ${PRIMARY_NAV_ITEMS.map((item) => `
         <button class="nav-item ${item.id === activeId ? 'active' : ''}" data-tool="${escapeHtml(item.id)}" type="button" ${item.id === activeId ? 'aria-current="page"' : ''}>
           ${navigationIcon(item.icon)}
@@ -1393,7 +1393,7 @@ function renderProviderNavigation() {
           </span>
         </button>
       `).join('')}
-    </details>
+    </nav>
     <div class="sidebar-footnote">本地优先 · Markdown 归档</div>
   `;
 }

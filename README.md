@@ -53,8 +53,14 @@ Author: `tllovesxs`
 
 ## 🖼️ 截图预览
 
-<p align="left">
-  <img src="docs/images/wandao-exporter-guis.png" alt="万能导桌面端主界面" width="900">
+<p align="center"><strong>首页</strong></p>
+<p align="center">
+  <img src="docs/images/wandao-home.png" alt="万能导桌面端首页" width="1000">
+</p>
+
+<p align="center"><strong>平台中心</strong></p>
+<p align="center">
+  <img src="docs/images/wandao-platform-center.png" alt="万能导桌面端平台中心" width="1000">
 </p>
 
 ## 🚀 支持能力

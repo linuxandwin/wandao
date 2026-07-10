@@ -159,12 +159,15 @@ class ElectronHealthTests(unittest.TestCase):
 
         self.assertIn('--brand: #9fe870', styles)
         self.assertIn('--surface: #e8ebe6', styles)
+        self.assertIn('--shell-start: #eaf3f7', styles)
         self.assertIn('--r-lg: 24px', styles)
+        self.assertIn('linear-gradient(168deg, var(--shell-start)', styles)
         self.assertIn('@media (prefers-reduced-motion: reduce)', styles)
         self.assertIn('class="skip-link"', index_html)
         self.assertIn('id="main-content" tabindex="-1"', index_html)
         self.assertIn('role="progressbar"', index_html)
         self.assertIn('id="btn-toggle-log"', index_html)
+        self.assertIn('<nav class="nav-group" aria-label="工作台">', app_js)
         self.assertIn("function setLogCollapsed", app_js)
         self.assertIn("function normalizeActionHierarchy", app_js)
         self.assertIn("选择平台 -> 执行任务 -> 本地 Markdown", design)
@@ -290,14 +293,18 @@ class ElectronHealthTests(unittest.TestCase):
 
     def test_checkpoint_runtime_is_bundled_for_packaged_app(self) -> None:
         package_json = read_text("wandao_electron/package.json")
+        package = json.loads(package_json)
+        package_lock = json.loads(read_text("wandao_electron/package-lock.json"))
         pyproject = read_text("pyproject.toml")
 
-        self.assertIn('"version": "1.2.7"', package_json)
+        self.assertRegex(package["version"], r"^\d+\.\d+\.\d+$")
+        self.assertEqual(package["version"], package_lock["version"])
+        self.assertEqual(package["version"], package_lock["packages"][""]["version"])
         self.assertIn('"from": "../wandao_checkpoint.py"', package_json)
         self.assertIn('"to": "python/wandao_checkpoint.py"', package_json)
         self.assertIn('"from": "../wandao_cli.py"', package_json)
         self.assertIn('"to": "python/wandao_cli.py"', package_json)
-        self.assertIn('version = "1.2.7"', pyproject)
+        self.assertIn(f'version = "{package["version"]}"', pyproject)
         self.assertIn('"wandao_checkpoint"', pyproject)
         self.assertIn('"wandao_cli"', pyproject)
 
