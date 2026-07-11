@@ -23,6 +23,14 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function formatTaskTime(value) {
+    if (!value) return '-';
+    const formatter = root.WandaoTime?.formatLocalDateTime;
+    if (typeof formatter === 'function') return formatter(value);
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
   function describeFailureItem(item, parent = '') {
     if (!item || typeof item !== 'object') return compact(item);
     const subject = firstNonEmpty(
@@ -217,8 +225,8 @@
       `平台：${task.providerTitle || provider.title || task.providerId || '-'}`,
       `任务：${task.title || '-'}`,
       `状态：${statusText(task.status)}`,
-      `开始时间：${task.startedAt || '-'}`,
-      `结束时间：${task.finishedAt || '-'}`,
+      `开始时间：${formatTaskTime(task.startedAt)}`,
+      `结束时间：${formatTaskTime(task.finishedAt)}`,
       task.elapsedMs ? `耗时：${formatDuration(task.elapsedMs)}` : '',
       `脚本：${task.script || '-'}`,
       `参数：${JSON.stringify(maskArgs(task.args || []))}`,
@@ -243,7 +251,7 @@
       '## 本任务详细日志',
       task.logs?.length ? task.logs.map((entry) => {
         const event = entry.event ? ` [${entry.event}]` : '';
-        return `[${entry.time}] [${entry.source}] [${entry.type}]${event} ${entry.message}`;
+        return `[${formatTaskTime(entry.time)}] [${entry.source}] [${entry.type}]${event} ${entry.message}`;
       }).join('\n') : '无'
     ].filter((line) => line !== '').join('\n'));
   }

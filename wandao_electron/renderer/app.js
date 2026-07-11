@@ -384,10 +384,23 @@ function appendDetailedLog(source, type, message, meta = {}) {
   if (logViewMode === 'detail') renderDetailedLogEntry(entry);
 }
 
-function formatLogTime(value) {
+
+function formatUserDateTime(value) {
+  const formatter = window.WandaoTime?.formatLocalDateTime;
+  if (typeof formatter === 'function') return formatter(value);
   const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return new Date().toLocaleTimeString();
-  return date.toLocaleTimeString();
+  return Number.isNaN(date.getTime()) ? '无效时间' : date.toLocaleString();
+}
+
+function formatUserTimestamp(value) {
+  if (!value) return '-';
+  const isTimestamp = window.WandaoTime?.isTimestamp;
+  if (typeof isTimestamp === 'function' ? isTimestamp(value) : value instanceof Date || /^\d{4}-\d{2}-\d{2}T/.test(String(value))) return formatUserDateTime(value);
+  return String(value);
+}
+
+function formatLogTime(value) {
+  return formatUserDateTime(value);
 }
 
 function createLogEntryElement(message, type = 'info', time = new Date().toISOString()) {
@@ -580,12 +593,12 @@ async function copyDeveloperReport() {
     }
   }
 
-  const userLines = userLogEntries.map((entry) => `[${entry.time}] [${entry.type}] ${entry.message}`);
-  const detailLines = detailLogEntries.map((entry) => `[${entry.time}] [${entry.source}] [${entry.type}] ${entry.message}`);
+  const userLines = userLogEntries.map((entry) => `[${formatUserDateTime(entry.time)}] [${entry.type}] ${entry.message}`);
+  const detailLines = detailLogEntries.map((entry) => `[${formatUserDateTime(entry.time)}] [${entry.source}] [${entry.type}] ${entry.message}`);
   const report = [
     '# 万能导错误报告',
     '',
-    `生成时间：${new Date().toISOString()}`,
+    `生成时间：${formatUserDateTime(new Date())}`,
     `当前功能：${activeToolLabel()}`,
     `当前工具 ID：${currentTool || '-'}`,
     `系统平台：${navigator.platform || '-'}`,
@@ -693,9 +706,15 @@ function resumeTaskDisabledReason(task) {
 }
 
 function resumeTaskArgs(task) {
-  const args = Array.isArray(task?.args) ? [...task.args] : [];
   const provider = TOOLS[task?.providerId] || {};
   const retryArg = providerRetryFailureArg(provider);
+  const helper = window.WandaoTaskResume?.buildResumeArgs;
+  if (typeof helper === 'function') {
+    return helper(task, retryArg, taskFailureCount(task));
+  }
+  const args = Array.isArray(task?.args) ? [...task.args] : [];
+  const interrupted = ['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase());
+  if (interrupted && retryArg) return args.filter((arg) => arg !== retryArg);
   if (retryArg && taskFailureCount(task) > 0 && !args.includes(retryArg)) {
     args.push(retryArg);
   }
@@ -778,7 +797,7 @@ function renderTaskHistory() {
     return;
   }
   list.innerHTML = tasks.map((task) => {
-    const startedAt = task.startedAt ? new Date(task.startedAt).toLocaleString() : '-';
+    const startedAt = task.startedAt ? formatUserDateTime(task.startedAt) : '-';
     const elapsed = task.elapsedMs ? `，耗时 ${formatDuration(task.elapsedMs)}` : '';
     const canResume = canResumeTask(task);
     const paths = taskArtifactPaths(task);
@@ -961,7 +980,16 @@ async function resumeTask(task) {
   }
   const args = resumeTaskArgs(task);
   const provider = TOOLS[task.providerId] || {};
-  const retryingFailures = Boolean(providerRetryFailureArg(provider) && taskFailureCount(task) > 0 && args.includes(providerRetryFailureArg(provider)));
+  const retryArg = providerRetryFailureArg(provider);
+  const shouldRetry = window.WandaoTaskResume?.shouldRetryFailureItems;
+  const retryingFailures = typeof shouldRetry === 'function'
+    ? shouldRetry(task, retryArg, taskFailureCount(task))
+    : Boolean(
+      retryArg
+      && !['stopped', 'interrupted'].includes(String(task?.status || '').toLowerCase())
+      && taskFailureCount(task) > 0
+      && args.includes(retryArg)
+    );
   const confirmDetail = retryingFailures
     ? `将只重试上次报告中的失败项，共 ${taskFailureCount(task)} 个。`
     : '将按历史命令重新执行，适合增量任务或中断后继续。';
@@ -2195,7 +2223,7 @@ function renderNoticeCenterPage() {
         <div>
           <div class="notice-source-line">
             <span>${escapeHtml(statusText)}</span>
-            <span>更新于 ${escapeHtml(manifest.updatedAt || '-')}</span>
+            <span>更新于 ${escapeHtml(formatUserTimestamp(manifest.updatedAt))}</span>
           </div>
         </div>
         <div class="notice-hero-actions">
@@ -4315,36 +4343,7 @@ function buildExportArgs(toolId, options = {}) {
 }
 
 function normalizeStandardTocNodes(provider, data) {
-  const toc = provider.toc || {};
-  const items = valueAtPath(data, toc.itemsPath || 'nodes');
-  if (!Array.isArray(items)) return [];
-  const idKey = toc.idKey || 'nodeId';
-  const exportIdKey = toc.exportIdKey || 'exportId';
-  const titleKey = toc.titleKey || 'title';
-  const parentKey = toc.parentIdKey || 'parentNodeId';
-  const selectableKey = toc.selectableKey || 'selectable';
-  const typeKey = toc.typeKey || 'type';
-  const selectableTypes = Array.isArray(toc.selectableTypes) ? new Set(toc.selectableTypes.map(String)) : null;
-  const parentPrefix = toc.nodePrefix || provider.id;
-  return items.map((item, index) => {
-    const rawId = String(valueAtPath(item, idKey) ?? valueAtPath(item, exportIdKey) ?? `${provider.id}-node-${index}`);
-    const rawParent = String(valueAtPath(item, parentKey) ?? '');
-    const exportId = String(valueAtPath(item, exportIdKey) ?? valueAtPath(item, idKey) ?? '');
-    const typeValue = String(valueAtPath(item, typeKey) ?? '');
-    let selectable = Boolean(valueAtPath(item, selectableKey));
-    if (selectableTypes) selectable = selectableTypes.has(typeValue);
-    if (toc.selectableWhenExportId !== false && exportId && valueAtPath(item, selectableKey) === undefined && !selectableTypes) {
-      selectable = true;
-    }
-    return {
-      nodeId: rawId.includes(':') ? rawId : `${parentPrefix}:${rawId}`,
-      exportId,
-      title: String(valueAtPath(item, titleKey) ?? '未命名'),
-      parentNodeId: rawParent ? (rawParent.includes(':') ? rawParent : `${parentPrefix}:${rawParent}`) : '',
-      selectable,
-      raw: item
-    };
-  });
+  return window.WandaoTocTree.normalizeStandardTocNodes(provider, data);
 }
 
 function normalizeTocNodes(toolId, data) {
@@ -4512,14 +4511,7 @@ function normalizeTocNodes(toolId, data) {
 }
 
 function tocNodeMaps(nodes) {
-  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
-  const children = new Map();
-  nodes.forEach((node) => {
-    const parent = node.parentNodeId && byId.has(node.parentNodeId) ? node.parentNodeId : '';
-    if (!children.has(parent)) children.set(parent, []);
-    children.get(parent).push(node);
-  });
-  return { byId, children };
+  return window.WandaoTocTree.tocNodeMaps(nodes);
 }
 
 function descendantExportIds(nodes, nodeId) {

@@ -8,6 +8,7 @@ const { assertSafeRelativePath, validatePluginManifest } = require('./plugin_for
 const { parseLastJson, parseProcessResult } = require('./process_result');
 const { extractSensitiveArguments } = require('./command_security');
 const { resolveProviderScript } = require('./provider_script_routing');
+const { resolveLegacyTemplateConfig } = require('./provider_legacy_compat');
 
 let mainWindow;
 let pythonProcess = null;
@@ -838,6 +839,11 @@ function normalizeProviderManifest(raw, providerRoot, sourceKind, pluginInfo = n
     });
   }
   provider.script = resolveProviderScript(defaultScript, provider.actions);
+  // Bundled Provider v1 manifests keep their CLI field definitions in
+  // fields[].arg. Some established built-in templates still read the older
+  // urlParam/outputParam/noUrl properties, so project the validated fields
+  // back into that compatibility surface instead of emitting "undefined".
+  Object.assign(provider, resolveLegacyTemplateConfig(raw));
   return provider;
 }
 
