@@ -1615,7 +1615,14 @@ def select_toc_items(toc: dict[str, Any], args: argparse.Namespace) -> list[dict
     items = flatten_toc(toc)
     selected_keys = set(getattr(args, "selected_toc_keys", None) or [])
     if selected_keys:
-        items = [item for item in items if item.get("key") in selected_keys]
+        selected_items = [item for item in items if item.get("key") in selected_keys]
+        if items and not selected_items:
+            preview = ", ".join(sorted(selected_keys)[:5])
+            raise ExportError(
+                "选择的知识星球专栏文档未匹配当前目录，"
+                "请重新读取目录后再试。未匹配 ID：" + preview
+            )
+        items = selected_items
     group_pattern_text = getattr(args, "toc_group_pattern", None)
     if group_pattern_text:
         group_pattern = re.compile(group_pattern_text)
