@@ -18,6 +18,7 @@ EXPECTED_PLUGINS = {
     "obsidian": {"obsidian-export"},
     "onenote": {"onenote"},
     "wiz": {"wiz"},
+    "wps": {"wps-export"},
     "xiliu": {"xiliu", "xiliu-import"},
     "yinxiang": {"yinxiang", "yinxiang-import"},
     "youdao": {"youdao"},

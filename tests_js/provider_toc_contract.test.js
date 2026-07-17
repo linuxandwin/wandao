@@ -103,6 +103,14 @@ const fixtures = {
     rootId: 'xiliu:folder', docId: 'xiliu:doc', parentId: 'xiliu:folder', exportId: 'doc',
     args: ['--doc-id', 'doc']
   },
+  'wps-export': {
+    payload: { nodes: [
+      { id: 'smart-documents', file_id: '', title: 'WPS Documents', parent_id: '', type: 'folder' },
+      { id: '101', file_id: '101', title: 'Document', parent_id: 'smart-documents', type: 'file' }
+    ] },
+    rootId: 'wps-export:smart-documents', docId: 'wps-export:101', parentId: 'wps-export:smart-documents', exportId: '101',
+    args: ['--file-id', '101']
+  },
   yinxiang: {
     payload: { notebooks: [{
       guid: 'notebook-guid', name: 'Notebook', stack: 'Stack',
